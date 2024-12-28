@@ -116,7 +116,7 @@
             ;; I assume untagged OK has only one useful argument
             ;; that's worth parsing; Dovecot appears to include some
             ;; informative text after, read as plain text.
-            (list :untagged '$OK
+            (list :untagged cmd
                   (%maybe-arg input)
                   (read-line input)))
            ((eq cmd '$BYE)
@@ -124,6 +124,7 @@
             (list :untagged '$BYE (read-line input)))
            (t
             (list* :untagged
+                   cmd
                    (loop for tok = (%read-token input)
                          while tok collect tok))))))
       (t

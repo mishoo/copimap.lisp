@@ -15,21 +15,31 @@
    (bin-sock :accessor imap-bin-sock)
    (text-sock :accessor imap-text-sock)
    (cmdseq :initform 0 :accessor imap-cmdseq)
-   (cmdqueue :initform (make-hash-table) :accessor imap-cmdqueue)))
+   (cmdqueue :initform (make-hash-table) :accessor imap-cmdqueue)
+   (thread :accessor imap-thread)
+   (running :initform nil :accessor imap-running)
+   (idling :initform nil :accessor imap-idling)))
 
-(defgeneric imap-connect (imap))
+(defgeneric imap-connect (imap &optional handler))
 (defgeneric imap-close (imap))
 (defgeneric imap-parse (imap))
+(defgeneric imap-read-loop (imap))
 (defgeneric imap-handle-ok (imap arg))
 (defgeneric imap-handle-bye (imap arg))
 (defgeneric imap-command (imap cmdstr &optional handler))
-(defgeneric imap-has-capability (imap str))
+(defgeneric imap-has-capability (imap capability))
+(defgeneric imap-write (imap str))
 
 (defmethod imap-has-capability ((conn imap) (cap string))
   (find cap (imap-capability conn) :test #'equal))
 
 (defmethod imap-has-capability ((conn imap) (cap symbol))
   (imap-has-capability conn (symbol-name cap)))
+
+(defmethod imap-write ((conn imap) (data string))
+  (let ((sock (imap-text-sock conn)))
+    (write-line data sock)
+    (force-output sock)))
 
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
   (unless (zerop (length cmdstr))
@@ -44,8 +54,7 @@
     (unless (zerop (length cmdstr))
       (write-char #\Space sock)
       (write-line cmdstr sock)
-      (force-output sock)
-      (imap-parse conn))))
+      (force-output sock))))
 
 (defmethod imap-command ((conn imap) (cmd symbol) &optional handler)
   (imap-command conn (symbol-name cmd) handler))
@@ -53,7 +62,7 @@
 (defmethod imap-command ((conn imap) (cmd cons) &optional handler)
   (let ((sock (imap-text-sock conn)))
     (imap-command conn "" handler)
-    (format t "*** SENDING: «~S»~%" cmd)
+    (format t "*** SENDING: «~A»~%" cmd)
     (labels
         ((write-tok (tok)
            (etypecase tok
@@ -102,13 +111,12 @@
         (write-char #\Space sock)
         (write-tok tok)))
     (format sock "~%")
-    (force-output sock)
-    (imap-parse conn)))
+    (force-output sock)))
 
 (defmethod imap-parse ((conn imap))
   (let* ((sock (imap-text-sock conn))
          (line (%read-cmdline sock)))
-    (format t "--- GOT: ~S~%" line)
+    (format t "--- GOT: ~A~%" line)
     (cond
       ((eq (car line) :untagged)
        (cond
@@ -123,9 +131,7 @@
               (handler (gethash id (imap-cmdqueue conn))))
          (when handler
            (funcall handler (cdr line))
-           (remhash id (imap-cmdqueue conn))))))
-    (when (sock:wait-for-input (imap-sock conn) :timeout 0 :ready-only t)
-      (imap-parse conn))))
+           (remhash id (imap-cmdqueue conn))))))))
 
 (defmethod imap-handle-ok ((conn imap) arg)
   (when (listp arg)
@@ -142,7 +148,7 @@
   (format t "Logged out~%")
   (imap-close conn))
 
-(defmethod imap-connect ((conn imap))
+(defmethod imap-connect ((conn imap) &optional connected-handler)
   (let* ((sock (sock:socket-connect (imap-host conn)
                                     (imap-port conn)
                                     :element-type '(unsigned-byte 8)))
@@ -165,12 +171,33 @@
                        (setf (imap-text-sock conn)
                              (flex:make-flexi-stream (imap-bin-sock conn)
                                                      :external-format '(:utf-8 :eol-style :crlf)))
-                       (imap-command
-                        conn `(:LOGIN ,(imap-user conn) ,(imap-password conn))
-                        (lambda (args)
-                          (when (eq '$OK (car args))
-                            (imap-handle-ok conn (cadr args))
-                            (format t "CAPAB: ~S~%" (imap-capability conn)))))))))))
+                       (imap-command conn `(:LOGIN ,(imap-user conn) ,(imap-password conn))
+                                     (lambda (args)
+                                       (when (eq '$OK (car args))
+                                         (imap-handle-ok conn (cadr args))
+                                         (format t "CAPAB: ~S~%" (imap-capability conn))
+                                         (setf (imap-thread conn)
+                                               (bt2:make-thread (lambda ()
+                                                                  (when connected-handler
+                                                                    (funcall connected-handler))
+                                                                  (setf (imap-running conn) t)
+                                                                  (imap-read-loop conn))
+                                                                :name (format nil "IMAP/~A/~A"
+                                                                              (imap-host conn)
+                                                                              (imap-user conn)))))))
+                       (imap-parse conn)))
+       (imap-parse conn)))))
 
 (defmethod imap-close ((conn imap))
-  (sock:socket-close (imap-sock conn)))
+  (sock:socket-close (imap-sock conn))
+  (setf (imap-running conn) nil
+        (imap-sock conn) nil
+        (imap-bin-sock conn) nil
+        (imap-text-sock conn) nil))
+
+(defmethod imap-read-loop ((conn imap))
+  (format t "Starting read loop (~A)" (imap-host conn))
+  (loop with sock = (imap-sock conn)
+        while (imap-running conn)
+        do (imap-parse conn))
+  (format t "Loop terminated (~A)" (imap-host conn)))

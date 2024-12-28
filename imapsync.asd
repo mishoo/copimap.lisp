@@ -12,7 +12,8 @@
                #:flexi-streams
                #:named-readtables
                #:trivial-utf-8
-               #:cl-ppcre)
+               #:cl-ppcre
+               #:bordeaux-threads)
   :components ((:file "package")
                (:file "parse")
                (:file "imapsync")))
