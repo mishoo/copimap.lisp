@@ -19,7 +19,8 @@
    (sock-lock :accessor imap-sock-lock)
    (thread :accessor imap-thread)
    (running :initform nil :accessor imap-running)
-   (idling :initform nil :accessor imap-idling)))
+   (idling :initform nil :accessor imap-idling)
+   (reconnect :initform t :accessor imap-reconnect)))
 
 (defmethod initialize-instance :after ((imap imap) &key &allow-other-keys)
   (unless (imap-port imap)
@@ -28,7 +29,7 @@
               993
               143))))
 
-(defgeneric imap-connect (imap &optional handler))
+(defgeneric imap-connect (imap))
 (defgeneric imap-close (imap))
 (defgeneric imap-parse (imap))
 (defgeneric imap-read-loop (imap))
@@ -37,6 +38,7 @@
 (defgeneric imap-command (imap cmdstr &optional handler))
 (defgeneric imap-has-capability (imap capability))
 (defgeneric imap-write (imap str))
+(defgeneric imap-maybe-reconnect (imap))
 
 (defmethod imap-has-capability ((conn imap) (cap string))
   (find cap (imap-capability conn) :test #'equal))
@@ -45,6 +47,7 @@
   (imap-has-capability conn (symbol-name cap)))
 
 (defmethod imap-write ((conn imap) (data string))
+  (imap-maybe-reconnect conn)
   (bt2:with-lock-held ((imap-sock-lock conn))
     (let ((stream (imap-text-stream conn)))
       (write-line data stream)
@@ -59,6 +62,7 @@
     reqid))
 
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
+  (imap-maybe-reconnect conn)
   (format t "*** SENDING: «~A»~%" cmdstr)
   (let ((reqid (imap-new-request-id conn handler))
         (stream (imap-text-stream conn)))
@@ -66,7 +70,8 @@
       (write-string reqid stream)
       (write-char #\Space stream)
       (write-line cmdstr stream)
-      (force-output stream))))
+      (force-output stream))
+    reqid))
 
 (defmethod imap-command ((conn imap) (cmd symbol) &optional handler)
   (imap-command conn (symbol-name cmd) handler))
@@ -74,6 +79,7 @@
 (defmethod imap-command ((conn imap) (cmd cons)
                          &optional handler
                          &aux (stream (imap-text-stream conn)))
+  (imap-maybe-reconnect conn)
   (bt2:with-lock-held ((imap-sock-lock conn))
     (format t "*** SENDING: «~A»~%" cmd)
     (labels
@@ -102,11 +108,19 @@
              (integer
               (format stream "~D" tok))
              (cons
-              (cond
-                ((eq :seq (car tok))
+              (case (car tok)
+                (:seq
                  (write-tok (cadr tok))
                  (write-char #\: stream)
                  (write-tok (caddr tok)))
+                ((:body :binary :body.peek :binary.peek :binary.size)
+                 (write-string (symbol-name (car tok)) stream)
+                 (write-char #\[ stream)
+                 (loop for first = t then nil
+                       for i in (cdr tok)
+                       do (unless first (write-char #\. stream))
+                          (write-tok i))
+                 (write-char #\] stream))
                 (t
                  (write-char #\( stream)
                  (loop for first = t then nil
@@ -120,12 +134,14 @@
                 (error "IMAP server is missing capability: BINARY"))
               (format stream "~~{~D+}~%" (length tok))
               (write-sequence tok (imap-bin-stream conn))))))
-      (write-string (imap-new-request-id conn handler) stream)
-      (loop for tok in cmd do
-        (write-char #\Space stream)
-        (write-tok tok)))
-    (format stream "~%")
-    (force-output stream)))
+      (let ((reqid (imap-new-request-id conn handler)))
+        (write-string reqid stream)
+        (loop for tok in cmd do
+          (write-char #\Space stream)
+          (write-tok tok))
+        (write-char #\Newline stream)
+        (force-output stream)
+        reqid))))
 
 (defmethod imap-parse ((conn imap))
   (let* ((line (bt2:with-lock-held ((imap-sock-lock conn))
@@ -162,7 +178,7 @@
   (format t "Logged out~%")
   (imap-close conn))
 
-(defmethod imap-connect ((conn imap) &optional connected-handler)
+(defmethod imap-connect ((conn imap))
   (let* ((sock (sock:socket-connect (imap-host conn)
                                     (imap-port conn)
                                     :element-type '(unsigned-byte 8)))
@@ -180,8 +196,6 @@
                 (format t "CAPAB: ~S~%" (imap-capability conn))
                 (setf (imap-thread conn)
                       (bt2:make-thread (lambda ()
-                                         (when connected-handler
-                                           (funcall connected-handler))
                                          (setf (imap-running conn) t)
                                          (imap-read-loop conn))
                                        :name tname)))))
@@ -222,6 +236,10 @@
                                        :external-format '(:utf-8 :eol-style :crlf)))
          (imap-parse conn)
          (login))))))
+
+(defmethod imap-maybe-reconnect ((conn imap))
+  (unless (imap-sock imap)
+    (imap-connect imap)))
 
 (defmethod imap-close ((conn imap))
   (when (imap-sock conn)

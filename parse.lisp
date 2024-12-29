@@ -24,36 +24,12 @@
                   (%skip-whitespace input))
         finally (read-char input)))
 
-(defun %read-number (first-digit input)
-  (loop with num = (- (char-code first-digit) 48)
-        for ch = (peek-char nil input)
-        while (char<= #\0 ch #\9)
-        do (setf num (+ (* num 10)
-                        (- (char-code (read-char input)) 48)))
-        finally (return num)))
-
 (defun %read-token (input)
   (%skip-whitespace input)
   (let ((ch (read-char input)))
     (cond
       ((char= #\Newline ch)
        nil)
-
-      ((char<= #\0 ch #\9)
-       (let ((num (%read-number ch input)))
-         (cond
-           ((char= #\: (peek-char nil input))
-            (read-char input)
-            (cond
-              ((char= #\* (peek-char nil input))
-               (read-char input)
-               `(:seq ,num :*))
-              ((char<= #\0 (setf ch (read-char input)) #\9)
-               `(:seq ,num ,(%read-number ch input)))
-              (t
-               (error "Invalid sequence"))))
-           (t
-            num))))
 
       ((char= #\" ch)
        (with-output-to-string (out)
@@ -92,13 +68,29 @@
          (t
           (let ((atom (with-output-to-string (str)
                         (write-char ch str)
-                        (loop for ch = (peek-char nil input)
-                              ;; XXX: should try to do a better job here.
+                        (loop with br = 0
+                              for ch = (peek-char nil input)
                               until (or (char= #\Newline ch)
                                         (char= #\Space ch)
-                                        (find ch "\"*%{}()" :test #'char=))
-                              do (write-char (read-char input) str)))))
-            (intern atom +atoms-package+))))))))
+                                        (find ch "\"*%{}()" :test #'char=)
+                                        (and (char= #\] ch)
+                                             (zerop br)))
+                              do (case ch
+                                   (#\[ (incf br))
+                                   (#\] (decf br)))
+                                 (write-char (read-char input) str)))))
+            (rx:register-groups-bind (a b) ("^(\\d+):(\\d+|\\*)$" atom)
+              (declare (type string a b))
+              (return-from %read-token
+                `(:seq ,(parse-integer a)
+                       ,(if (string= b "*")
+                            :*
+                            (parse-integer b)))))
+            (cond
+              ((rx:scan "^\\d+$" atom)
+               (parse-integer atom))
+              (t
+               (intern atom +atoms-package+))))))))))
 
 (defun %maybe-arg (input)
   (%skip-whitespace input)
