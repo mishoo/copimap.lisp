@@ -50,79 +50,82 @@
       (write-line data stream)
       (force-output stream))))
 
-(defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
-  (unless (zerop (length cmdstr))
-    (format t "*** SENDING: «~A»~%" cmdstr))
-  (let ((stream (imap-text-stream conn))
-        (id (incf (imap-cmdseq conn))))
+(defun imap-new-request-id (conn handler)
+  (let ((reqid (format nil "A~D" (incf (imap-cmdseq conn)))))
     (when handler
-      (setf (gethash (intern (format nil "A~D" id) *atoms-package*)
+      (setf (gethash (intern reqid +atoms-package+)
                      (imap-cmdqueue conn))
             handler))
+    reqid))
+
+(defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
+  (format t "*** SENDING: «~A»~%" cmdstr)
+  (let ((reqid (imap-new-request-id conn handler))
+        (stream (imap-text-stream conn)))
     (bt2:with-lock-held ((imap-sock-lock conn))
-      (format stream "A~D" id)
-      (unless (zerop (length cmdstr))
-        (write-char #\Space stream)
-        (write-line cmdstr stream)
-        (force-output stream)))))
+      (write-string reqid stream)
+      (write-char #\Space stream)
+      (write-line cmdstr stream)
+      (force-output stream))))
 
 (defmethod imap-command ((conn imap) (cmd symbol) &optional handler)
   (imap-command conn (symbol-name cmd) handler))
 
-(defmethod imap-command ((conn imap) (cmd cons) &optional handler)
-  (imap-command conn "" handler)
+(defmethod imap-command ((conn imap) (cmd cons)
+                         &optional handler
+                         &aux (stream (imap-text-stream conn)))
   (bt2:with-lock-held ((imap-sock-lock conn))
-    (let ((sock (imap-text-stream conn)))
-      (format t "*** SENDING: «~A»~%" cmd)
-      (labels
-          ((write-tok (tok)
-             (etypecase tok
-               (null
-                (write-string "()" sock))
-               (symbol
-                (write-string (symbol-name tok) sock))
-               (string
-                (cond
-                  ((rx:scan "[\"\\n\\r]" tok)
-                   (let ((bytes (trivial-utf-8:string-to-utf-8-bytes tok)))
-                     (cond
-                       ((or (<= (length bytes) 4096)
-                            (imap-has-capability conn :LITERAL+))
-                        (format sock "{~D+}~%" (length bytes))
-                        (write-sequence bytes (imap-bin-stream conn)))
-                       (t
-                        ;; I guess that must be a really old IMAP server...
-                        (error "Synchronizing literal not implemented")
-                        ;; (format sock "{~D}~%" (length bytes))
-                        ))))
-                  (t
-                   (format sock "\"~A\"" tok))))
-               (integer
-                (format sock "~D" tok))
-               (cons
-                (cond
-                  ((eq :seq (car tok))
-                   (write-tok (cadr tok))
-                   (write-char #\: sock)
-                   (write-tok (caddr tok)))
-                  (t
-                   (write-char #\( sock)
-                   (loop for first = t then nil
-                         for tok in tok
-                         do (unless first
-                              (write-char #\Space sock))
-                            (write-tok tok))
-                   (write-char #\) sock))))
-               ((vector (unsigned-byte 8))
-                (unless (imap-has-capability conn :BINARY)
-                  (error "IMAP server is missing capability: BINARY"))
-                (format sock "~~{~D+}~%" (length tok))
-                (write-sequence tok sock)))))
-        (loop for tok in cmd do
-          (write-char #\Space sock)
-          (write-tok tok)))
-      (format sock "~%")
-      (force-output sock))))
+    (format t "*** SENDING: «~A»~%" cmd)
+    (labels
+        ((write-tok (tok)
+           (etypecase tok
+             (null
+              (write-string "()" stream))
+             (symbol
+              (write-string (symbol-name tok) stream))
+             (string
+              (cond
+                ((rx:scan "[\"\\n\\r]" tok)
+                 (let ((bytes (trivial-utf-8:string-to-utf-8-bytes tok)))
+                   (cond
+                     ((or (<= (length bytes) 4096)
+                          (imap-has-capability conn :LITERAL+))
+                      (format stream "{~D+}~%" (length bytes))
+                      (write-sequence bytes (imap-bin-stream conn)))
+                     (t
+                      ;; I guess that must be a really old IMAP server...
+                      (error "Synchronizing literal not implemented")
+                      ;; (format stream "{~D}~%" (length bytes))
+                      ))))
+                (t
+                 (format stream "\"~A\"" tok))))
+             (integer
+              (format stream "~D" tok))
+             (cons
+              (cond
+                ((eq :seq (car tok))
+                 (write-tok (cadr tok))
+                 (write-char #\: stream)
+                 (write-tok (caddr tok)))
+                (t
+                 (write-char #\( stream)
+                 (loop for first = t then nil
+                       for tok in tok
+                       do (unless first
+                            (write-char #\Space stream))
+                          (write-tok tok))
+                 (write-char #\) stream))))
+             ((vector (unsigned-byte 8))
+              (unless (imap-has-capability conn :BINARY)
+                (error "IMAP server is missing capability: BINARY"))
+              (format stream "~~{~D+}~%" (length tok))
+              (write-sequence tok (imap-bin-stream conn))))))
+      (write-string (imap-new-request-id conn handler) stream)
+      (loop for tok in cmd do
+        (write-char #\Space stream)
+        (write-tok tok)))
+    (format stream "~%")
+    (force-output stream)))
 
 (defmethod imap-parse ((conn imap))
   (let* ((line (bt2:with-lock-held ((imap-sock-lock conn))

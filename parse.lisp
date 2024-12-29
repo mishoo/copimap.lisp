@@ -1,6 +1,6 @@
 (in-package #:imapsync)
 
-(defconstant *atoms-package* (find-package "IMAPSYNC-ATOMS"))
+(defconstant +atoms-package+ (find-package "IMAPSYNC-ATOMS"))
 
 (in-readtable imapsync::syntax)
 
@@ -8,7 +8,7 @@
   (set-macro-character
    #\$ (lambda (stream ch)
          (declare (ignore ch))
-         (let ((*package* *atoms-package*)
+         (let ((*package* +atoms-package+)
                (*readtable* (named-readtables:find-readtable :common-lisp)))
            (read stream)))))
 
@@ -24,8 +24,8 @@
                   (%skip-whitespace input))
         finally (read-char input)))
 
-(defun %read-number (input)
-  (loop with num = 0
+(defun %read-number (first-digit input)
+  (loop with num = (- (char-code first-digit) 48)
         for ch = (peek-char nil input)
         while (char<= #\0 ch #\9)
         do (setf num (+ (* num 10)
@@ -34,14 +34,13 @@
 
 (defun %read-token (input)
   (%skip-whitespace input)
-  (let ((ch (peek-char nil input)))
+  (let ((ch (read-char input)))
     (cond
       ((char= #\Newline ch)
-       (read-char input)
        nil)
 
       ((char<= #\0 ch #\9)
-       (let ((num (%read-number input)))
+       (let ((num (%read-number ch input)))
          (cond
            ((char= #\: (peek-char nil input))
             (read-char input)
@@ -49,22 +48,20 @@
               ((char= #\* (peek-char nil input))
                (read-char input)
                `(:seq ,num :*))
-              ((char<= #\0 (peek-char nil input) #\9)
-               `(:seq ,num ,(%read-number input)))
+              ((char<= #\0 (setf ch (read-char input)) #\9)
+               `(:seq ,num ,(%read-number ch input)))
               (t
                (error "Invalid sequence"))))
            (t
             num))))
 
       ((char= #\" ch)
-       (read-char input)
        (with-output-to-string (out)
          (loop for ch = (read-char input)
                until (char= ch #\")
                do (write-char ch out))))
 
       ((char= #\{ ch)
-       (read-char input)
        (let ((len (%read-token input)))
          (check-type len fixnum)
          (assert (char= #\} (read-char input)))
@@ -73,26 +70,35 @@
                                           :byte-length len)))
 
       ((char= #\* ch)
-       (read-char input)
        :*)
 
       ((char= #\( ch)
-       (read-char input)
        (%read-list input #\)))
 
       ((char= #\[ ch)
-       (read-char input)
        (%read-list input #\]))
 
       (t
-       (let ((atom (with-output-to-string (str)
-                     (loop for ch = (peek-char nil input)
-                           ;; XXX: should try to do a better job here.
-                           until (or (char= #\Newline ch)
-                                     (char= #\Space ch)
-                                     (find ch "\"*%{}[]()" :test #'char=))
-                           do (write-char (read-char input) str)))))
-         (intern atom *atoms-package*))))))
+       (cond
+         ((char= #\{ (peek-char nil input)) ; literal8
+          (read-char input)
+          (let ((len (%read-token input)))
+            (check-type len fixnum)
+            (assert (char= #\} (read-char input)))
+            (assert (char= #\Newline (read-char input)))
+            (let ((seq (make-array len :element-type '(unsigned-byte 8))))
+              (read-sequence seq (flex:flexi-stream-stream input))
+              seq)))
+         (t
+          (let ((atom (with-output-to-string (str)
+                        (write-char ch str)
+                        (loop for ch = (peek-char nil input)
+                              ;; XXX: should try to do a better job here.
+                              until (or (char= #\Newline ch)
+                                        (char= #\Space ch)
+                                        (find ch "\"*%{}()" :test #'char=))
+                              do (write-char (read-char input) str)))))
+            (intern atom +atoms-package+))))))))
 
 (defun %maybe-arg (input)
   (%skip-whitespace input)
