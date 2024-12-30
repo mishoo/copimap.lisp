@@ -113,7 +113,7 @@
                 (eq cmd '$BAD))
             ;; I assume untagged OK has only one useful argument
             ;; that's worth parsing; Dovecot appears to include some
-            ;; informative text after, read as plain text.
+            ;; informative text after, read that as plain text.
             (list :untagged cmd
                   (%maybe-arg input)
                   (read-line input)))

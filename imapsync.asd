@@ -18,4 +18,4 @@
   :components ((:file "package")
                (:file "parse")
                (:file "mUTF-7")
-               (:file "imapsync")))
+               (:file "imap")))
