@@ -13,7 +13,9 @@
                #:named-readtables
                #:trivial-utf-8
                #:cl-ppcre
-               #:bordeaux-threads)
+               #:bordeaux-threads
+               #:babel)
   :components ((:file "package")
                (:file "parse")
+               (:file "mUTF-7")
                (:file "imapsync")))

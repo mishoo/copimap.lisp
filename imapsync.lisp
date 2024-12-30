@@ -1,5 +1,3 @@
-;;;; imapsync.lisp
-
 (in-package #:imapsync)
 
 (in-readtable imapsync::syntax)
