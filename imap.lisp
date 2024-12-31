@@ -94,7 +94,7 @@
               (write-string (symbol-name tok) stream))
              (string
               (cond
-                ((rx:scan "[\"\\n\\r]" tok)
+                ((rx:scan "[\"\\n\\r\\x00]" tok)
                  (let ((bytes (trivial-utf-8:string-to-utf-8-bytes tok)))
                    (cond
                      ((or (<= (length bytes) 4096)
