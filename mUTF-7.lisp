@@ -81,14 +81,15 @@
                                     (enc (logand chr3 63)))))
                        (write-char #\- out))
                      (setf (fill-pointer buffer) 0))))
-          (loop for ch = (read-char in nil) while ch do
-            (cond
-              ((eql ch #\&)
-               (dump)
-               (write-string "&-" out))
-              ((<= #x20 (char-code ch) #x7e)
-               (dump)
-               (write-char ch out))
-              (t
-               (vector-push-extend ch buffer)))
+          (declare (inline enc))
+          (loop for ch = (read-char in nil)
+                while ch do (cond
+                              ((eql ch #\&)
+                               (dump)
+                               (write-string "&-" out))
+                              ((<= #x20 (char-code ch) #x7e)
+                               (dump)
+                               (write-char ch out))
+                              (t
+                               (vector-push-extend ch buffer)))
                 finally (dump)))))))
