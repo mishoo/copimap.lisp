@@ -9,7 +9,7 @@
    (port :initarg :port :accessor imap-port :initform nil)
    (use-ssl :initarg :use-ssl :accessor imap-use-ssl :initform :STARTTLS)
    (capability :accessor imap-capability)
-   (sock :accessor imap-sock)
+   (sock :initform nil :accessor imap-sock)
    (bin-stream :accessor imap-bin-stream)
    (text-stream :accessor imap-text-stream)
    (cmdseq :initform 0 :accessor imap-cmdseq)
@@ -17,7 +17,6 @@
    (sock-lock :accessor imap-sock-lock)
    (thread :accessor imap-thread)
    (running :initform nil :accessor imap-running)
-   (idling :initform nil :accessor imap-idling)
    (reconnect :initform t :accessor imap-reconnect)))
 
 (defmethod initialize-instance :after ((imap imap) &key &allow-other-keys)
@@ -76,12 +75,18 @@
 
 (defmethod imap-command ((conn imap) (cmd cons)
                          &optional handler
-                         &aux (stream (imap-text-stream conn)))
-  (imap-maybe-reconnect conn)
+                         &aux (stream (progn
+                                        (imap-maybe-reconnect conn)
+                                        (imap-text-stream conn))))
   (bt2:with-lock-held ((imap-sock-lock conn))
     (format t "*** SENDING: «~A»~%" cmd)
     (labels
-        ((write-tok (tok)
+        ((write-delimited (sep list)
+           (loop for first = t then nil
+                 for i in list
+                 do (unless first (write-char sep stream))
+                    (write-tok i)))
+         (write-tok (tok)
            (etypecase tok
              (null
               (write-string "()" stream))
@@ -107,25 +112,20 @@
               (format stream "~D" tok))
              (cons
               (case (car tok)
-                (:seq
+                (:range
                  (write-tok (cadr tok))
                  (write-char #\: stream)
                  (write-tok (caddr tok)))
+                (:seq
+                 (write-delimited #\, (cdr tok)))
                 ((:body :binary :body.peek :binary.peek :binary.size)
                  (write-string (symbol-name (car tok)) stream)
                  (write-char #\[ stream)
-                 (loop for first = t then nil
-                       for i in (cdr tok)
-                       do (unless first (write-char #\. stream))
-                          (write-tok i))
+                 (write-delimited #\. (cdr tok))
                  (write-char #\] stream))
                 (t
                  (write-char #\( stream)
-                 (loop for first = t then nil
-                       for tok in tok
-                       do (unless first
-                            (write-char #\Space stream))
-                          (write-tok tok))
+                 (write-delimited #\Space tok)
                  (write-char #\) stream))))
              ((vector (unsigned-byte 8))
               (unless (imap-has-capability conn :BINARY)
@@ -134,9 +134,8 @@
               (write-sequence tok (imap-bin-stream conn))))))
       (let ((reqid (imap-new-request-id conn handler)))
         (write-string reqid stream)
-        (loop for tok in cmd do
-          (write-char #\Space stream)
-          (write-tok tok))
+        (write-char #\Space stream)
+        (write-delimited #\Space cmd)
         (write-char #\Newline stream)
         (force-output stream)
         reqid))))
@@ -151,7 +150,9 @@
          ((eq (cadr line) '$OK)
           (imap-handle-ok conn (caddr line)))
          ((eq (cadr line) '$BYE)
-          (imap-handle-bye conn (caddr line)))))
+          (imap-handle-bye conn (caddr line)))
+         ((eq (cadr line) '$NO)
+          (format *error-output* "WARNING: ~A~%" (cddr line)))))
       ((eq (car line) :continue)
        :continue)
       (t

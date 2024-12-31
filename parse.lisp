@@ -82,10 +82,10 @@
             (rx:register-groups-bind (a b) ("^(\\d+):(\\d+|\\*)$" atom)
               (declare (type string a b))
               (return-from %read-token
-                `(:seq ,(parse-integer a)
-                       ,(if (string= b "*")
-                            :*
-                            (parse-integer b)))))
+                `(:range ,(parse-integer a)
+                         ,(if (string= b "*")
+                              :*
+                              (parse-integer b)))))
             (cond
               ((rx:scan "^\\d+$" atom)
                (parse-integer atom))
