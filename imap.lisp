@@ -268,8 +268,8 @@
          (login))))))
 
 (defmethod imap-maybe-reconnect ((conn imap))
-  (unless (imap-sock imap)
-    (imap-connect imap)))
+  (unless (imap-sock conn)
+    (imap-connect conn)))
 
 (defmethod imap-close ((conn imap))
   (when (imap-sock conn)
