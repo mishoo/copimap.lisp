@@ -190,29 +190,25 @@
          (tname (format nil "IMAP:~A/~A" (imap-host conn) (imap-user conn))))
     (setf (imap-sock conn) sock
           (imap-sock-lock conn) (bt2:make-lock :name tname))
-
     (labels
         ((login ()
+           (setf (imap-thread conn)
+                 (bt2:make-thread (lambda ()
+                                    (setf (imap-running conn) t)
+                                    (imap-read-loop conn))
+                                  :name tname))
            (imap-command
             conn `(:LOGIN ,(imap-user conn) ,(imap-password conn))
             (lambda (args)
               (when (eq '$OK (car args))
                 (imap-handle-ok conn (cadr args))
-                (format t "CAPAB: ~S~%" (imap-capability conn))
-                (setf (imap-thread conn)
-                      (bt2:make-thread (lambda ()
-                                         (setf (imap-running conn) t)
-                                         (imap-read-loop conn))
-                                       :name tname)))))
-           (imap-parse conn))
-
+                (format t "CAPAB: ~S~%" (imap-capability conn))))))
          (setup-ssl ()
            (setf (imap-bin-stream conn)
                  (cl+ssl:make-ssl-client-stream (sock:socket-stream sock) :verify nil))
            (setf (imap-text-stream conn)
                  (flex:make-flexi-stream (imap-bin-stream conn)
                                          :external-format '(:utf-8 :eol-style :crlf)))))
-
       (ecase (imap-use-ssl conn)
         (:STARTTLS
          (setf (imap-text-stream conn)
@@ -227,12 +223,10 @@
                          (setup-ssl)
                          (login)))
          (imap-parse conn))
-
         ((t)
          (setup-ssl)
          (imap-parse conn)
          (login))
-
         (:nope-just-send-my-password-in-clear-text
          (setf (imap-bin-stream conn)
                (flex:make-flexi-stream (sock:socket-stream sock)))
