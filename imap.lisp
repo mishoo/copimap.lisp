@@ -33,6 +33,7 @@
 (defgeneric imap-read-loop (imap))
 (defgeneric imap-handle-ok (imap arg))
 (defgeneric imap-handle-bye (imap arg))
+(defgeneric imap-handle-capability (imap arg))
 (defgeneric imap-command (imap cmdstr &optional handler))
 (defgeneric imap-has-capability (imap capability))
 (defgeneric imap-write (imap str))
@@ -43,6 +44,14 @@
 
 (defmethod imap-has-capability ((conn imap) (cap symbol))
   (imap-has-capability conn (symbol-name cap)))
+
+(defmethod imap-handle-capability ((conn imap) arg)
+  (setf (imap-capability conn)
+        (mapcar (lambda (x)
+                  (if (stringp x)
+                      (string-upcase x)
+                      (symbol-name x)))
+                arg)))
 
 (defmethod imap-write ((conn imap) (data string))
   (imap-maybe-reconnect conn)
@@ -150,7 +159,7 @@
   (let* ((line (bt2:with-lock-held ((imap-sock-lock conn))
                  (%read-cmdline (imap-text-stream conn)
                                 (imap-has-utf8 conn)))))
-    (format t "--- GOT: ~A~%" line)
+    (format t "--- GOT: ~S~%" line)
     (cond
       ((eq (car line) :untagged)
        (cond
@@ -159,7 +168,9 @@
          ((eq (cadr line) '$BYE)
           (imap-handle-bye conn (caddr line)))
          ((eq (cadr line) '$NO)
-          (format *error-output* "WARNING: ~A~%" (cddr line)))))
+          (format *error-output* "WARNING: ~A~%" (cddr line)))
+         ((eq (cadr line) '$CAPABILITY)
+          (imap-handle-capability conn (cddr line)))))
       ((eq (car line) :continue)
        :continue)
       (t
@@ -173,12 +184,7 @@
   (when (listp arg)
     (case (car arg)
       ($CAPABILITY
-       (setf (imap-capability conn)
-             (mapcar (lambda (x)
-                       (if (stringp x)
-                           (string-upcase x)
-                           (symbol-name x)))
-                     (cdr arg)))))))
+       (imap-handle-capability conn (cdr arg))))))
 
 (defmethod imap-handle-bye ((conn imap) arg)
   (format t "Logged out~%")
