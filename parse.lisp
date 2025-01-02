@@ -16,15 +16,15 @@
   (loop while (char= #\Space (peek-char nil input))
         do (read-char input)))
 
-(defun %read-list (input eol-char utf8)
+(defun %read-list (input eol-char)
   (loop until (char= eol-char (peek-char nil input))
         collect (prog2
                     (%skip-whitespace input)
-                    (%read-token input utf8)
+                    (%read-token input)
                   (%skip-whitespace input))
         finally (read-char input)))
 
-(defun %read-token (input utf8)
+(defun %read-token (input)
   (%skip-whitespace input)
   (let ((ch (read-char input)))
     (cond
@@ -32,38 +32,33 @@
        nil)
 
       ((char= #\" ch)
-       (let ((str (with-output-to-string (out)
-                    (loop for ch = (read-char input)
-                          until (char= ch #\")
-                          do (write-char ch out)))))
-         (if utf8 str (mutf-7-to-string str))))
+       (with-output-to-string (out)
+         (loop for ch = (read-char input)
+               until (char= ch #\")
+               do (write-char ch out))))
 
       ((char= #\{ ch)
-       (let ((len (%read-token input utf8)))
+       (let ((len (%read-token input)))
          (check-type len fixnum)
          (assert (char= #\} (read-char input)))
          (assert (char= #\Newline (read-char input)))
-         (if utf8
-             (trivial-utf-8:read-utf-8-string (flex:flexi-stream-stream input)
-                                              :byte-length len)
-             (let ((seq (make-array len :element-type 'character)))
-               (read-sequence seq input)
-               (mutf-7-to-string seq)))))
+         (trivial-utf-8:read-utf-8-string (flex:flexi-stream-stream input)
+                                          :byte-length len)))
 
       ((char= #\* ch)
        :*)
 
       ((char= #\( ch)
-       (%read-list input #\) utf8))
+       (%read-list input #\)))
 
       ((char= #\[ ch)
-       (%read-list input #\] utf8))
+       (%read-list input #\]))
 
       (t
        (cond
          ((char= #\{ (peek-char nil input)) ; literal8
           (read-char input)
-          (let ((len (%read-token input utf8)))
+          (let ((len (%read-token input)))
             (check-type len fixnum)
             (assert (char= #\} (read-char input)))
             (assert (char= #\Newline (read-char input)))
@@ -95,25 +90,23 @@
               ((rx:scan "^\\d+$" atom)
                (parse-integer atom))
               (t
-               (unless utf8
-                 (setf atom (mutf-7-to-string atom)))
                (intern atom +atoms-package+))))))))))
 
-(defun %maybe-arg (input utf8)
+(defun %maybe-arg (input)
   (%skip-whitespace input)
   (when (char= #\[ (peek-char nil input))
     (prog1
-        (%read-token input utf8)
+        (%read-token input)
       (%skip-whitespace input))))
 
-(defun %read-cmdline (input utf8)
+(defun %read-cmdline (input)
   (let ((ch (peek-char nil input)))
     (cond
       ((char= ch #\+)
        (list :continue (read-line input)))
       ((char= ch #\*)
        (read-char input)
-       (let ((cmd (%read-token input utf8)))
+       (let ((cmd (%read-token input)))
          (cond
            ((or (eq cmd '$OK)
                 (eq cmd '$NO)
@@ -122,7 +115,7 @@
             ;; that's worth parsing; Dovecot appears to include some
             ;; informative text after, read that as plain text.
             (list :untagged cmd
-                  (%maybe-arg input utf8)
+                  (%maybe-arg input)
                   (read-line input)))
            ((eq cmd '$BYE)
             (%skip-whitespace input)
@@ -130,10 +123,10 @@
            (t
             (list* :untagged
                    cmd
-                   (loop for tok = (%read-token input utf8)
+                   (loop for tok = (%read-token input)
                          while tok collect tok))))))
       (t
-       (list (%read-token input utf8)
-             (%read-token input utf8)
-             (%maybe-arg input utf8)
+       (list (%read-token input)
+             (%read-token input)
+             (%maybe-arg input)
              (read-line input))))))

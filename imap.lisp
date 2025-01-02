@@ -17,8 +17,7 @@
    (sock-lock :accessor imap-sock-lock)
    (thread :accessor imap-thread)
    (running :initform nil :accessor imap-running)
-   (reconnect :initform t :accessor imap-reconnect)
-   (utf8 :initform nil :accessor imap-has-utf8)))
+   (reconnect :initform t :accessor imap-reconnect)))
 
 (defmethod initialize-instance :after ((imap imap) &key &allow-other-keys)
   (unless (imap-port imap)
@@ -40,7 +39,7 @@
 (defgeneric imap-maybe-reconnect (imap))
 
 (defmethod imap-has-capability ((conn imap) (cap string))
-  (find cap (imap-capability conn) :test #'equalp))
+  (find cap (imap-capability conn) :test #'equal))
 
 (defmethod imap-has-capability ((conn imap) (cap symbol))
   (imap-has-capability conn (symbol-name cap)))
@@ -101,16 +100,11 @@
              (null
               (write-string "()" stream))
              (symbol
-              (write-string (if (imap-has-utf8 conn)
-                                (symbol-name tok)
-                                (string-to-mutf-7 (symbol-name tok)))
-                            stream))
+              (write-string (symbol-name tok) stream))
              (string
               (cond
                 ((rx:scan "[\"\\n\\r\\x00]" tok)
-                 (let ((bytes (if (imap-has-utf8 conn)
-                                  (trivial-utf-8:string-to-utf-8-bytes tok)
-                                  (string-to-mutf-7 tok))))
+                 (let ((bytes (trivial-utf-8:string-to-utf-8-bytes tok)))
                    (cond
                      ((or (<= (length bytes) 4096)
                           (imap-has-capability conn :LITERAL+))
@@ -157,9 +151,8 @@
 
 (defmethod imap-parse ((conn imap))
   (let* ((line (bt2:with-lock-held ((imap-sock-lock conn))
-                 (%read-cmdline (imap-text-stream conn)
-                                (imap-has-utf8 conn)))))
-    (format t "--- GOT: ~S~%" line)
+                 (%read-cmdline (imap-text-stream conn)))))
+    (format t "--- GOT: ~A~%" line)
     (cond
       ((eq (car line) :untagged)
        (cond
@@ -206,24 +199,6 @@
               (when (eq '$OK (car args))
                 (imap-handle-ok conn (cadr args))
                 (format t "CAPAB: ~S~%" (imap-capability conn))
-
-                (unless (or (imap-has-capability conn :IMAP4rev1)
-                            (imap-has-capability conn :IMAP4rev2))
-                  (format *error-output* "WARNING: Both IMAP4rev1 and IMAP4rev2 capabilities are missing. Our library might not work properly with this server.~%"))
-
-                ;; XXX: should test this.
-                (when (imap-has-capability conn :IMAP4rev2)
-                  (imap-command
-                   conn '(:enable :IMAP4rev2)
-                   (lambda (arg)
-                     (when (eq '$OK (car arg))
-                       (setf (imap-has-utf8 conn) t)
-                       (setf (imap-text-stream conn)
-                             (flex:make-flexi-stream
-                              (imap-bin-stream conn)
-                              :external-format '(:utf-8 :eol-style :crlf))))))
-                  (imap-parse conn))
-
                 (setf (imap-thread conn)
                       (bt2:make-thread (lambda ()
                                          (setf (imap-running conn) t)
@@ -236,13 +211,13 @@
                  (cl+ssl:make-ssl-client-stream (sock:socket-stream sock) :verify nil))
            (setf (imap-text-stream conn)
                  (flex:make-flexi-stream (imap-bin-stream conn)
-                                         :external-format '(:ascii :eol-style :crlf)))))
+                                         :external-format '(:utf-8 :eol-style :crlf)))))
 
       (ecase (imap-use-ssl conn)
         (:STARTTLS
          (setf (imap-text-stream conn)
                (flex:make-flexi-stream (sock:socket-stream sock)
-                                       :external-format '(:ascii :eol-style :crlf)))
+                                       :external-format '(:utf-8 :eol-style :crlf)))
          (imap-parse conn)
          (unless (imap-has-capability conn :STARTTLS)
            (error "IMAP server is missing capability: STARTTLS"))
@@ -263,7 +238,7 @@
                (flex:make-flexi-stream (sock:socket-stream sock)))
          (setf (imap-text-stream conn)
                (flex:make-flexi-stream (sock:socket-stream sock)
-                                       :external-format '(:ascii :eol-style :crlf)))
+                                       :external-format '(:utf-8 :eol-style :crlf)))
          (imap-parse conn)
          (login))))))
 
