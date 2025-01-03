@@ -68,7 +68,7 @@
 
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
   (imap-maybe-reconnect conn)
-  (format t "*** SENDING: «~A»~%" cmdstr)
+  (v:debug :send "~A" cmdstr)
   (let ((reqid (imap-new-request-id conn handler))
         (stream (imap-text-stream conn)))
     (bt2:with-lock-held ((imap-sock-lock conn))
@@ -87,7 +87,7 @@
                                         (imap-maybe-reconnect conn)
                                         (imap-text-stream conn))))
   (bt2:with-lock-held ((imap-sock-lock conn))
-    (format t "*** SENDING: «~A»~%" cmd)
+    (v:debug :send "~S" cmd)
     (labels
         ((write-delimited (sep list)
            (loop for first = t then nil
@@ -115,7 +115,9 @@
                       ;; (format stream "{~D}~%" (length bytes))
                       ))))
                 (t
-                 (format stream "\"~A\"" tok))))
+                 (write-char #\" stream)
+                 (write-string tok stream)
+                 (write-char #\" stream))))
              (integer
               (format stream "~D" tok))
              (cons
@@ -177,10 +179,10 @@
   (imap-handle-capability conn arg))
 
 (defmethod imap-handle ((conn imap) (cmd (eql '$NO)) arg)
-  (format *error-output* "WARNING: ~A~%" arg))
+  (v:warn :imap "Got untagged NO: ~A" arg))
 
 (defmethod imap-handle ((conn imap) (cmd (eql '$BYE)) arg)
-  (format *error-output* "Logged out ~A~%" arg)
+  (v:info :imap "Logged out: ~A" arg)
   (imap-close conn))
 
 (defmethod imap-handle ((conn imap) (cmd (eql '$ESEARCH)) arg)
@@ -192,10 +194,10 @@
       (let ((handler (gethash reqid (imap-cmdqueue conn))))
         (if handler
             (push (cdr arg) (cdr handler))
-            (format *error-output* "REQID ~A from ESEARCH not found~%" reqid))))))
+            (v:warn :imap "REQID ~A from ESEARCH not found" reqid))))))
 
 (defmethod imap-handle ((conn imap) cmd arg)
-  (format t "UNTAGGED: ~A / ~A~%" cmd arg))
+  (v:debug :imap "[~A] ~A" cmd arg))
 
 (defmethod imap-connect ((conn imap))
   (let* ((sock (sock:socket-connect (imap-host conn)
@@ -216,7 +218,7 @@
             (lambda (args)
               (when (eq '$OK (car args))
                 (imap-handle conn '$OK (cdr args))
-                (format t "CAPAB: ~S~%" (imap-capability conn))))))
+                (v:info :imap "CAPAB: ~A" (imap-capability conn))))))
          (setup-ssl ()
            (setf (imap-bin-stream conn)
                  (cl+ssl:make-ssl-client-stream (sock:socket-stream sock) :verify nil))
@@ -264,7 +266,7 @@
         (imap-thread conn) nil))
 
 (defmethod imap-read-loop ((conn imap))
-  (format t "Starting read loop (~A)~%" (imap-host conn))
+  (v:info :imap "Starting read loop (~A)" (imap-host conn))
   (loop with sock = (imap-sock conn)
         with stream = (imap-text-stream conn)
         while (imap-running conn)
@@ -272,4 +274,4 @@
            (loop while (and (imap-running conn)
                             (listen stream))
                  do (imap-parse conn)))
-  (format t "Loop terminated (~A)~%" (imap-host conn)))
+  (v:info :imap "Loop terminated (~A)" (imap-host conn)))

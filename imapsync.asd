@@ -14,7 +14,8 @@
                #:trivial-utf-8
                #:cl-ppcre
                #:bordeaux-threads
-               #:babel)
+               #:babel
+               #:verbose)
   :components ((:file "package")
                (:file "parse")
                (:file "mUTF-7")

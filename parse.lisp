@@ -9,7 +9,7 @@
    #\$ (lambda (stream ch)
          (declare (ignore ch))
          (let ((*package* +atoms-package+)
-               (*readtable* (named-readtables:find-readtable :common-lisp)))
+               (*readtable* *preserve-case-readtable*))
            (read stream)))))
 
 (defun %skip-whitespace (input)
