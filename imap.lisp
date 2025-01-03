@@ -30,8 +30,7 @@
 (defgeneric imap-close (imap))
 (defgeneric imap-parse (imap))
 (defgeneric imap-read-loop (imap))
-(defgeneric imap-handle-ok (imap arg))
-(defgeneric imap-handle-bye (imap arg))
+(defgeneric imap-handle (imap cmd arg))
 (defgeneric imap-handle-capability (imap arg))
 (defgeneric imap-command (imap cmdstr &optional handler))
 (defgeneric imap-has-capability (imap capability))
@@ -64,7 +63,7 @@
     (when handler
       (setf (gethash (intern reqid +atoms-package+)
                      (imap-cmdqueue conn))
-            handler))
+            (list handler)))
     reqid))
 
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
@@ -152,36 +151,51 @@
 (defmethod imap-parse ((conn imap))
   (let* ((line (bt2:with-lock-held ((imap-sock-lock conn))
                  (%read-cmdline (imap-text-stream conn)))))
-    (format t "--- GOT: ~A~%" line)
     (cond
       ((eq (car line) :untagged)
-       (cond
-         ((eq (cadr line) '$OK)
-          (imap-handle-ok conn (caddr line)))
-         ((eq (cadr line) '$BYE)
-          (imap-handle-bye conn (caddr line)))
-         ((eq (cadr line) '$NO)
-          (format *error-output* "WARNING: ~A~%" (cddr line)))
-         ((eq (cadr line) '$CAPABILITY)
-          (imap-handle-capability conn (cddr line)))))
+       (if (numberp (cadr line))
+           ;; FETCH responses are prefixed with the message number
+           (imap-handle conn (caddr line) (list* (cadr line) (cdddr line)))
+           ;; other notifications
+           (imap-handle conn (cadr line) (cddr line))))
       ((eq (car line) :continue)
        :continue)
       (t
        (let* ((id (car line))
               (handler (gethash id (imap-cmdqueue conn))))
          (when handler
-           (funcall handler (cdr line))
+           (apply (car handler) (cdr line) (cdr handler))
            (remhash id (imap-cmdqueue conn))))))))
 
-(defmethod imap-handle-ok ((conn imap) arg)
-  (when (listp arg)
-    (case (car arg)
+(defmethod imap-handle ((conn imap) (cmd (eql '$OK)) arg)
+  (when (listp (car arg))
+    (case (caar arg)
       ($CAPABILITY
-       (imap-handle-capability conn (cdr arg))))))
+       (imap-handle-capability conn (cdar arg))))))
 
-(defmethod imap-handle-bye ((conn imap) arg)
-  (format t "Logged out~%")
+(defmethod imap-handle ((conn imap) (cmd (eql '$CAPABILITY)) arg)
+  (imap-handle-capability conn arg))
+
+(defmethod imap-handle ((conn imap) (cmd (eql '$NO)) arg)
+  (format *error-output* "WARNING: ~A~%" arg))
+
+(defmethod imap-handle ((conn imap) (cmd (eql '$BYE)) arg)
+  (format *error-output* "Logged out ~A~%" arg)
   (imap-close conn))
+
+(defmethod imap-handle ((conn imap) (cmd (eql '$ESEARCH)) arg)
+  (when (and (listp (car arg))
+             (eq '$TAG (caar arg)))
+    (let ((reqid (cadar arg)))
+      (when (stringp reqid)
+        (setf reqid (intern reqid +atoms-package+)))
+      (let ((handler (gethash reqid (imap-cmdqueue conn))))
+        (if handler
+            (push (cdr arg) (cdr handler))
+            (format *error-output* "REQID ~A from ESEARCH not found~%" reqid))))))
+
+(defmethod imap-handle ((conn imap) cmd arg)
+  (format t "UNTAGGED: ~A / ~A~%" cmd arg))
 
 (defmethod imap-connect ((conn imap))
   (let* ((sock (sock:socket-connect (imap-host conn)
@@ -201,7 +215,7 @@
             conn `(:LOGIN ,(imap-user conn) ,(imap-password conn))
             (lambda (args)
               (when (eq '$OK (car args))
-                (imap-handle-ok conn (cadr args))
+                (imap-handle conn '$OK (cdr args))
                 (format t "CAPAB: ~S~%" (imap-capability conn))))))
          (setup-ssl ()
            (setf (imap-bin-stream conn)
