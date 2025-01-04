@@ -205,7 +205,7 @@ invoke `imap-handle'."
               (write-string (symbol-name tok) stream))
              (string
               (cond
-                ((rx:scan "[\"\\n\\r\\x00]" tok)
+                ((rx:scan "[\\n\\r\\x00]" tok)
                  (let ((bytes (trivial-utf-8:string-to-utf-8-bytes tok)))
                    (cond
                      ((or (<= (length bytes) 4096)
@@ -222,7 +222,11 @@ invoke `imap-handle'."
                       (force-output (imap-bin-stream conn))))))
                 (t
                  (write-char #\" stream)
-                 (write-string tok stream)
+                 (loop for ch across tok do
+                   (when (or (char= ch #\\)
+                             (char= ch #\"))
+                     (write-char #\\ stream))
+                   (write-char ch stream))
                  (write-char #\" stream))))
              (integer
               (format stream "~D" tok))
