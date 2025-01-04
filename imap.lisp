@@ -58,12 +58,12 @@ Supports plain authentication, sending commands and receiving output.
 
 IMAP is a fully asynchronous protocol, in that when you request some
 data, the server will send results in the form of untagged
-notifications that cannot be reliably linked to your request (with a
-few exceptions). The `imap-connect' method will start a thread that
-continuously parses output from the server and calls `imap-handle' for
-any untagged notifications. You can specialize this method in
-subclasses to make sense of this data. The base methods just log
-output via the `verbose' package."))
+notifications that can't always be reliably linked to your
+request. The `imap-connect' method will start a thread that
+continuously parses input from the server via `imap-parse', which
+see. Use `imap-command' to send commands to the IMAP server, and
+specialize `imap-handle' in your own subclasses in order to retrieve
+results from the server."))
 
 (defmethod initialize-instance :after ((imap imap) &key &allow-other-keys)
   (unless (imap-port imap)
@@ -89,7 +89,7 @@ output via the `verbose' package."))
 subclasses, for example to re-SELECT the appropriate mailbox.")
 
 (defmethod imap-has-capability ((conn imap) (cap string))
-  (find cap (imap-capability conn) :test #'equal))
+  (find cap (imap-capability conn) :test #'equalp))
 
 (defmethod imap-has-capability ((conn imap) (cap symbol))
   (imap-has-capability conn (symbol-name cap)))
@@ -144,7 +144,7 @@ you're doing."
 
     (imap-command imap '(:list \"\" \"*\"))
     (imap-command imap '(:select inbox))
-    (imap-command imap '(:uid :fetch 1 (flags envelope)))
+    (imap-command imap '(:uid :fetch (:range 1 5) (flags envelope)))
     (imap-command imap '(:uid :fetch 1 (flags envelope (:binary.peek 1))))
 
 Symbols will be sent as IMAP atoms; they don't have to be keywords,
@@ -264,9 +264,21 @@ invoke `imap-handle'."
 
 (defmethod imap-parse ((conn imap))
   "Parse one command line from the server. Holds the mutex while the
-command is parsed. Invokes `imap-handle' for untagged
-notifications. On tagged responses it invokes the associated handler
-from `imap-cmdqueue', if found."
+command is read. Invokes `imap-handle' for untagged notifications. On
+tagged responses it invokes the associated handler from
+`imap-cmdqueue', if found.
+
+The command line, as returned by `%read-cmdline', is a list of
+tokens (similar to the ones that you send to `imap-command'). The
+first is `:untagged' for notifications or `:continue' for continuation
+requests, otherwise it's a request ID followed by data returned for
+that request.
+
+IMAP atoms are similar to Lisp symbols, so they are parsed as such,
+and interned into `+atoms-package+' (IMAPSYNC-ATOMS). Note that the
+reader syntax in `IMAPSYNC' defines a custom reader for $ which
+interns symbols in `+atoms-package+'. This reader is case sensitive,
+so symbol `$OK' will be different from `$ok'."
   (let* ((line (bt2:with-recursive-lock-held ((imap-sock-lock conn))
                  (%read-cmdline (imap-text-stream conn)))))
     (v:debug :in "~A" line)
