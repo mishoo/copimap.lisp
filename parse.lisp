@@ -54,50 +54,50 @@
       ((char= #\[ ch)
        (%read-list input #\]))
 
+      ((and (char= #\~ ch)
+            (char= #\{ (peek-char nil input))) ; literal8
+       (read-char input)
+       (let ((len (%read-token input t)))
+         (check-type len fixnum)
+         (assert (char= #\} (read-char input)))
+         (assert (char= #\Newline (read-char input)))
+         (let ((seq (make-array len :element-type '(unsigned-byte 8))))
+           (read-sequence seq (flex:flexi-stream-stream input))
+           seq)))
+
       (t
-       (cond
-         ((char= #\{ (peek-char nil input)) ; literal8
-          (read-char input)
-          (let ((len (%read-token input t)))
-            (check-type len fixnum)
-            (assert (char= #\} (read-char input)))
-            (assert (char= #\Newline (read-char input)))
-            (let ((seq (make-array len :element-type '(unsigned-byte 8))))
-              (read-sequence seq (flex:flexi-stream-stream input))
-              seq)))
-         (t
-          (let ((atom (with-output-to-string (str)
-                        (write-char ch str)
-                        (loop with br = 0
-                              for ch = (peek-char nil input)
-                              until (or (char= #\Newline ch)
-                                        (char= #\Space ch)
-                                        (find ch "\"*%{}()," :test #'char=)
-                                        (and (char= #\] ch)
-                                             (zerop br)))
-                              do (case ch
-                                   (#\[ (incf br))
-                                   (#\] (decf br)))
-                                 (write-char (read-char input) str)))))
-            (setf atom
-                  (block nil
-                    (rx:register-groups-bind (a colon b) ("^(\\d+)(:)?(\\d+)?$" atom)
-                      (unless colon (return (parse-integer a)))
-                      (when b
-                        (return `(:range ,(parse-integer a)
-                                         ,(parse-integer b))))
-                      (when (eql #\* (peek-char nil input))
-                        (read-char input)
-                        (return `(:range ,(parse-integer a) :*))))
-                    (intern atom +atoms-package+)))
-            (cond
-              (in-seq atom)
-              ((eql #\, (peek-char nil input))
-               `(:seq ,atom
-                      ,@(loop do (read-char input)
-                              collect (%read-token input t)
-                              while (eql #\, (peek-char nil input)))))
-              (t atom)))))))))
+       (let ((atom (with-output-to-string (str)
+                     (write-char ch str)
+                     (loop with br = 0
+                           for ch = (peek-char nil input)
+                           until (or (char= #\Newline ch)
+                                     (char= #\Space ch)
+                                     (find ch "\"*%{}()," :test #'char=)
+                                     (and (char= #\] ch)
+                                          (zerop br)))
+                           do (case ch
+                                (#\[ (incf br))
+                                (#\] (decf br)))
+                              (write-char (read-char input) str)))))
+         (setf atom
+               (block nil
+                 (rx:register-groups-bind (a colon b) ("^(\\d+)(:)?(\\d+)?$" atom)
+                   (unless colon (return (parse-integer a)))
+                   (when b
+                     (return `(:range ,(parse-integer a)
+                                      ,(parse-integer b))))
+                   (when (eql #\* (peek-char nil input))
+                     (read-char input)
+                     (return `(:range ,(parse-integer a) :*))))
+                 (intern atom +atoms-package+)))
+         (cond
+           (in-seq atom)
+           ((eql #\, (peek-char nil input))
+            `(:seq ,atom
+                   ,@(loop do (read-char input)
+                           collect (%read-token input t)
+                           while (eql #\, (peek-char nil input)))))
+           (t atom)))))))
 
 (defun %maybe-arg (input)
   (%skip-whitespace input)
