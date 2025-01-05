@@ -4,7 +4,8 @@
   (:use #:cl #:named-readtables)
   (:local-nicknames (#:sock #:usocket)
                     (#:rx #:cl-ppcre)
-                    (#:v #:org.shirakumo.verbose)))
+                    (#:v #:org.shirakumo.verbose)
+                    (#:a #:alexandria)))
 
 (defpackage #:imapsync-atoms)
 

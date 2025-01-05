@@ -117,6 +117,12 @@ subclasses, for example to re-SELECT the appropriate mailbox.")
             (list handler)))
     reqid))
 
+(defmacro when-ok (arg &body body)
+  `(when (and (listp ,arg)
+              (eq '$OK (car ,arg)))
+     (setf ,arg (cdr ,arg))
+     ,@body))
+
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
   "Send a raw command. Use this for simple commands, or if you know what
 you're doing."
@@ -353,8 +359,8 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
            (imap-command
             conn `(:LOGIN ,(imap-user conn) ,(imap-password conn))
             (lambda (args)
-              (when (eq '$OK (car args))
-                (imap-handle conn '$OK (cdr args))
+              (when-ok args
+                (imap-handle conn '$OK args)
                 (v:debug :imap "CAPAB: ~A" (imap-capability conn))
                 (imap-on-connect conn)))))
          (setup-ssl ()

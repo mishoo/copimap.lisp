@@ -8,15 +8,20 @@
   :serial t
   :depends-on (#:usocket
                #:cl+ssl
-               #:usocket
                #:flexi-streams
                #:named-readtables
                #:trivial-utf-8
                #:cl-ppcre
                #:bordeaux-threads
                #:babel
-               #:verbose)
+               #:verbose
+               #:alexandria
+               #:cl-dbi
+               #:cl-fad
+               #:uiop)
   :components ((:file "package")
                (:file "parse")
                (:file "mUTF-7")
-               (:file "imap")))
+               (:file "imap")
+               (:file "mailbox")
+               (:file "store")))
