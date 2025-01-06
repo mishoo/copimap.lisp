@@ -5,6 +5,7 @@
   (:local-nicknames (#:sock #:usocket)
                     (#:rx #:cl-ppcre)
                     (#:v #:org.shirakumo.verbose)
+                    (#:file-attributes #:org.shirakumo.file-attributes)
                     (#:a #:alexandria)))
 
 (defpackage #:imapsync-atoms)

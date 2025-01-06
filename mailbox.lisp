@@ -10,11 +10,23 @@
    (recent :initform 0 :initarg :recent :accessor mailbox-recent)
    (unseen :initform 0 :initarg :unseen :accessor mailbox-unseen)
    (uidvalidity :initform nil :initarg :uidvalidity :accessor mailbox-uidvalidity)
-   (uidnext :initform 0 :initarg :uidnext :accessor mailbox-uidnext)
-   (local-store :initform nil :initarg :local-store :accessor mailbox-local-store)))
+   (uidnext :initform 0 :initarg :uidnext :accessor mailbox-uidnext)))
 
 (defclass imap+mailbox (imap mailbox)
-  ())
+  ((local-store :initarg :local-store :accessor mailbox-local-store)))
+
+(defmacro with-local-store (conn &body body)
+  `(with-slots ((store local-store)) ,conn
+     ,@body))
+
+(defmethod initialize-instance :after ((conn imap+mailbox) &key &allow-other-keys)
+  (unless (slot-boundp conn 'local-store)
+    (setf (mailbox-local-store conn)
+          (make-instance 'maildir-store
+                         :path (format nil "~~/Imapsync/~A/~A/~A/"
+                                       (imap-host conn)
+                                       (imap-user conn)
+                                       (mailbox-name conn))))))
 
 (defmethod imap-on-connect ((conn imap+mailbox))
   (imap-command conn `(:select ,(mailbox-name conn))
@@ -33,10 +45,16 @@
         (t (call-next-method))))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$FLAGS)) arg)
-  (setf (mailbox-flags conn) (car arg)))
+  (setf (mailbox-flags conn) (car arg))
+  (with-local-store conn
+    (store-save-flags (mailbox-local-store conn) (car arg))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$EXISTS)) arg)
   (setf (mailbox-exists conn) (car arg)))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$RECENT)) arg)
   (setf (mailbox-recent conn) (car arg)))
+
+(defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$FETCH)) arg)
+  (with-local-store conn
+    (when store (store-save-messages store (list (cadr arg))))))

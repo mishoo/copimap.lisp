@@ -18,7 +18,9 @@
                #:alexandria
                #:cl-dbi
                #:cl-fad
-               #:uiop)
+               #:uiop
+               #:local-time
+               #:file-attributes)
   :components ((:file "package")
                (:file "parse")
                (:file "mUTF-7")

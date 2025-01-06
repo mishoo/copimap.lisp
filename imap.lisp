@@ -287,7 +287,7 @@ interns symbols in `+atoms-package+'. This reader is case sensitive,
 so symbol `$OK' will be different from `$ok'."
   (let* ((line (bt2:with-recursive-lock-held ((imap-sock-lock conn))
                  (%read-cmdline (imap-text-stream conn)))))
-    (v:debug :in "~A" line)
+    (v:trace :input "~A" line)
     (cond
       ((eq (car line) :untagged)
        (if (numberp (cadr line))
