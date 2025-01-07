@@ -46,11 +46,7 @@ will not be attempted over plain text.")
            :documentation "The read loop thread.")
 
    (running :initform nil :accessor imap-running
-            :documentation "The read loop will continue as long as this remains `T'.")
-
-   (reconnect :initform t :accessor imap-reconnect
-              :documentation "Wether to attempt reconnecting when the socket is closed. See
-`imap-maybe-reconnect'."))
+            :documentation "The read loop will continue as long as this remains `T'."))
 
   (:documentation "Low-level IMAP class.
 
@@ -80,7 +76,6 @@ results from the server."))
 (defgeneric imap-command (imap cmdstr &optional handler))
 (defgeneric imap-has-capability (imap capability))
 (defgeneric imap-write (imap str))
-(defgeneric imap-maybe-reconnect (imap))
 
 (defgeneric imap-on-connect (imap))
 
@@ -103,7 +98,6 @@ subclasses, for example to re-SELECT the appropriate mailbox.")
                 arg)))
 
 (defmethod imap-write ((conn imap) (data string))
-  (imap-maybe-reconnect conn)
   (bt2:with-recursive-lock-held ((imap-sock-lock conn))
     (let ((stream (imap-text-stream conn)))
       (write-line data stream)
@@ -126,7 +120,6 @@ subclasses, for example to re-SELECT the appropriate mailbox.")
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
   "Send a raw command. Use this for simple commands, or if you know what
 you're doing."
-  (imap-maybe-reconnect conn)
   (v:debug :send "~A" cmdstr)
   (let ((reqid (imap-new-request-id conn handler))
         (stream (imap-text-stream conn)))
@@ -142,9 +135,7 @@ you're doing."
 
 (defmethod imap-command ((conn imap) (cmd cons)
                          &optional handler
-                         &aux (stream (progn
-                                        (imap-maybe-reconnect conn)
-                                        (imap-text-stream conn))))
+                         &aux (stream (imap-text-stream conn)))
   "Send a command to the server. The command will be assembled from
 `cmd', which should be a list. A few examples:
 
@@ -298,11 +289,12 @@ so symbol `$OK' will be different from `$ok'."
       ((eq (car line) :continue)
        :continue)
       (t
-       (let* ((id (car line))
-              (handler (gethash id (imap-cmdqueue conn))))
+       (let* ((reqid (car line))
+              (handler (gethash reqid (imap-cmdqueue conn))))
          (when handler
            (apply (car handler) (cdr line) (cdr handler))
-           (remhash id (imap-cmdqueue conn))))))))
+           (remhash reqid (imap-cmdqueue conn)))
+         reqid)))))
 
 (defmethod imap-handle ((conn imap) (cmd (eql '$OK)) arg)
   "The default handler for untagged OK notifications. Sets
@@ -341,6 +333,13 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
 
 (defmethod imap-handle ((conn imap) cmd arg)
   (v:debug :imap "[~A] ~A" cmd arg))
+
+;; XXX: this doesn't seem to work well.. :-\ Don't use it.
+(defgeneric imap-command-sync (imap cmdstr &optional handler))
+(defmethod imap-command-sync ((conn imap) cmd &optional handler)
+  (bt2:with-recursive-lock-held ((imap-sock-lock conn))
+    (let ((reqid (imap-command conn cmd handler)))
+      (loop until (eq reqid (imap-parse conn))))))
 
 (defmethod imap-connect ((conn imap))
   (let* ((sock (sock:socket-connect (imap-host conn)
@@ -395,11 +394,6 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
                                        :external-format '(:utf-8 :eol-style :crlf)))
          (imap-parse conn)
          (login))))))
-
-(defmethod imap-maybe-reconnect ((conn imap))
-  (unless (imap-sock conn)
-    (when (imap-reconnect conn)
-      (imap-connect conn))))
 
 (defmethod imap-close ((conn imap))
   (when (imap-sock conn)
