@@ -23,6 +23,7 @@
 (defgeneric store-get-last-uid (store))
 (defgeneric store-save-messages (store messages))
 (defgeneric store-save-flags (store flags))
+(defgeneric store-save-labels (store labels))
 (defgeneric store-close (store))
 (defgeneric store-get-by-uid (store uid))
 
@@ -48,12 +49,20 @@
                )"
               "CREATE INDEX idx_message_mtime ON message(mtime)"
               "CREATE TABLE flag (name VARCHAR(255) PRIMARY KEY)"
+              "CREATE TABLE label (name VARCHAR(255) PRIMARY KEY)"
               "CREATE TABLE map_flag_message (
                  flag VARCHAR(255),
                  message UNSIGNED INTEGER,
                  PRIMARY KEY (flag, message),
-                 FOREIGN KEY (flag) REFERENCES flags(name) ON DELETE CASCADE ON UPDATE CASCADE,
-                 FOREIGN KEY (message) REFERENCES messages(uid) ON DELETE CASCADE ON UPDATE CASCADE
+                 FOREIGN KEY (flag) REFERENCES flag(name) ON DELETE CASCADE ON UPDATE CASCADE,
+                 FOREIGN KEY (message) REFERENCES message(uid) ON DELETE CASCADE ON UPDATE CASCADE
+               )"
+              "CREATE TABLE map_label_message (
+                 label VARCHAR(255),
+                 message UNSIGNED INTEGER,
+                 PRIMARY KEY (label, message),
+                 FOREIGN KEY (label) REFERENCES label(name) ON DELETE CASCADE ON UPDATE CASCADE,
+                 FOREIGN KEY (message) REFERENCES message(uid) ON DELETE CASCADE ON UPDATE CASCADE
                )"
               )))
       (loop with db = (store-db store)
@@ -64,6 +73,14 @@
   (let ((sql (dbi:prepare (store-db store)
                  "INSERT INTO flag (name) VALUES (?) ON CONFLICT DO NOTHING")))
     (loop for name in flags do
+      (dbi:execute sql (list (if (symbolp name)
+                                 (symbol-name name)
+                                 name))))))
+
+(defmethod store-save-labels ((store store) labels)
+  (let ((sql (dbi:prepare (store-db store)
+                 "INSERT INTO label (name) VALUES (?) ON CONFLICT DO NOTHING")))
+    (loop for name in labels do
       (dbi:execute sql (list (if (symbolp name)
                                  (symbol-name name)
                                  name))))))
@@ -115,6 +132,7 @@
   (loop with db = (store-db store)
         with insert-message = (dbi:prepare db "INSERT INTO message (uid, path, internaldate, mtime) VALUES (?, ?, ?, ?)")
         with add-flags = (dbi:prepare db "INSERT INTO map_flag_message (flag, message) VALUES (?, ?)")
+        with add-labels = (dbi:prepare db "INSERT INTO map_label_message (label, message) VALUES (?, ?)")
         with mtime
         for msg in messages
         for uid = (getf msg '$UID)
@@ -122,6 +140,7 @@
                                   (ts (when date (parse-internaldate date))))
                              (when ts (local-time:timestamp-to-unix ts)))
         for flags = (getf msg '$FLAGS)
+        for labels = (getf msg '$X-GM-LABELS)
         for seen = (find '$\\Seen flags)
         for envelope = (getf msg '$ENVELOPE)
         for body = (getf msg '$BODY[])
@@ -151,9 +170,15 @@
                    (rename-file tmpname newname)
                    (setf mtime (file-attributes:modification-time newname)))
                  (store-save-flags store flags) ; XXX: probably pointless..
+                 (store-save-labels store labels)
                  (dbi:execute insert-message (list uid filename internaldate mtime))
                  (loop for flag in flags
                        for flag-name = (if (symbolp flag)
                                            (symbol-name flag)
                                            flag)
-                       do (dbi:execute add-flags (list flag-name uid)))))))
+                       do (dbi:execute add-flags (list flag-name uid)))
+                 (loop for label in labels
+                       for label-name = (if (symbolp label)
+                                            (symbol-name label)
+                                            label)
+                       do (dbi:execute add-labels (list label-name uid)))))))
