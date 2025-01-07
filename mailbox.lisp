@@ -19,14 +19,17 @@
   `(with-slots ((store local-store)) ,conn
      ,@body))
 
+(defmethod mailbox-local-store-directory ((conn imap+mailbox))
+  (format nil "~~/Imapsync/~A/~A/~A/"
+          (imap-host conn)
+          (imap-user conn)
+          (rx:regex-replace-all "[\\[\\]]" (mailbox-name conn) "_")))
+
 (defmethod initialize-instance :after ((conn imap+mailbox) &key &allow-other-keys)
   (unless (slot-boundp conn 'local-store)
     (setf (mailbox-local-store conn)
           (make-instance 'maildir-store
-                         :path (format nil "~~/Imapsync/~A/~A/~A/"
-                                       (imap-host conn)
-                                       (imap-user conn)
-                                       (mailbox-name conn))))))
+                         :path (mailbox-local-store-directory conn)))))
 
 (defmethod imap-on-connect ((conn imap+mailbox))
   (imap-command conn `(:select ,(mailbox-name conn))
