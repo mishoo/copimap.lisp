@@ -144,3 +144,27 @@
              (%read-token input)
              (%maybe-arg input)
              (read-line input))))))
+
+;; 17-Jul-1996 02:44:25 -0700
+(defun parse-internaldate (internaldate)
+  (declare (type string internaldate))
+  (rx:register-groups-bind (date month year hh mm ss offset-sign offset-hour offset-min)
+      ("^ ?(\\d+)-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\\d+) (\\d+):(\\d+):(\\d+) ([+-])?(\\d{2})(\\d{2})$"
+       internaldate)
+    (declare (type string date month year hh mm ss offset-hour offset-min))
+    (let* ((date (parse-integer date))
+           (month (1+ (position month #("Jan" "Feb" "Mar"
+                                        "Apr" "May" "Jun"
+                                        "Jul" "Aug" "Sep"
+                                        "Oct" "Nov" "Dec")
+                                :test #'equal)))
+           (year (parse-integer year))
+           (hh (parse-integer hh))
+           (mm (parse-integer mm))
+           (ss (parse-integer ss))
+           (offset-sign (if (equal offset-sign "-") -1 1))
+           (offset-hour (* offset-sign (parse-integer offset-hour)))
+           (offset-min (* offset-sign (parse-integer offset-min))))
+      (local-time:encode-timestamp 0 ss mm hh date month year
+                                   :offset (+ (* offset-hour 3600)
+                                              (* offset-min 60))))))
