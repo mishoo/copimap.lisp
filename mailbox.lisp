@@ -32,10 +32,10 @@
                          :path (mailbox-local-store-directory conn)))))
 
 (defmethod imap-on-connect ((conn imap+mailbox))
-  (imap-command conn `(:select ,(mailbox-name conn))
-                (lambda (arg)
-                  (when-ok arg
-                    (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))))))
+  (imap-command-sync conn `(:select ,(mailbox-name conn))
+                     (lambda (arg)
+                       (when-ok arg
+                         (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$OK)) arg)
   (when (listp (car arg))

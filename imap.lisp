@@ -46,7 +46,11 @@ will not be attempted over plain text.")
            :documentation "The read loop thread.")
 
    (running :initform nil :accessor imap-running
-            :documentation "The read loop will continue as long as this remains `T'."))
+            :documentation "The read loop will continue as long as this remains `T'.")
+
+   (reconnect :initform t :accessor imap-reconnect
+              :documentation "Wether to attempt reconnecting when the socket is closed. See
+`imap-maybe-reconnect'."))
 
   (:documentation "Low-level IMAP class.
 
@@ -74,6 +78,7 @@ results from the server."))
 (defgeneric imap-read-loop (imap))
 (defgeneric imap-handle (imap cmd arg))
 (defgeneric imap-command (imap cmdstr &optional handler))
+(defgeneric imap-command-sync (imap cmdstr &optional handler))
 (defgeneric imap-has-capability (imap capability))
 (defgeneric imap-write (imap str))
 
@@ -98,16 +103,15 @@ subclasses, for example to re-SELECT the appropriate mailbox.")
                 arg)))
 
 (defmethod imap-write ((conn imap) (data string))
-  (bt2:with-recursive-lock-held ((imap-sock-lock conn))
-    (let ((stream (imap-text-stream conn)))
-      (write-line data stream)
-      (force-output stream))))
+  (let ((stream (imap-text-stream conn)))
+    (write-line data stream)
+    (force-output stream)))
 
 (defun imap-new-request-id (conn handler)
-  (let ((reqid (format nil "A~D" (incf (imap-cmdseq conn)))))
+  (let ((reqid (intern (format nil "A~D" (incf (imap-cmdseq conn)))
+                       +atoms-package+)))
     (when handler
-      (setf (gethash (intern reqid +atoms-package+)
-                     (imap-cmdqueue conn))
+      (setf (gethash reqid (imap-cmdqueue conn))
             (list handler)))
     reqid))
 
@@ -120,11 +124,12 @@ subclasses, for example to re-SELECT the appropriate mailbox.")
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
   "Send a raw command. Use this for simple commands, or if you know what
 you're doing."
+  (imap-maybe-reconnect conn)
   (v:debug :send "~A" cmdstr)
   (let ((reqid (imap-new-request-id conn handler))
         (stream (imap-text-stream conn)))
     (bt2:with-recursive-lock-held ((imap-sock-lock conn))
-      (write-string reqid stream)
+      (write-string (symbol-name reqid) stream)
       (write-char #\Space stream)
       (write-line cmdstr stream)
       (force-output stream))
@@ -135,7 +140,9 @@ you're doing."
 
 (defmethod imap-command ((conn imap) (cmd cons)
                          &optional handler
-                         &aux (stream (imap-text-stream conn)))
+                         &aux (stream (progn
+                                        (imap-maybe-reconnect conn)
+                                        (imap-text-stream conn))))
   "Send a command to the server. The command will be assembled from
 `cmd', which should be a list. A few examples:
 
@@ -252,7 +259,7 @@ invoke `imap-handle'."
               (write-sequence tok (imap-bin-stream conn))
               (force-output (imap-bin-stream conn))))))
       (let ((reqid (imap-new-request-id conn handler)))
-        (write-string reqid stream)
+        (write-string (symbol-name reqid) stream)
         (write-char #\Space stream)
         (write-delimited #\Space cmd)
         (write-char #\Newline stream)
@@ -276,8 +283,7 @@ and interned into `+atoms-package+' (IMAPSYNC-ATOMS). Note that the
 reader syntax in `IMAPSYNC' defines a custom reader for $ which
 interns symbols in `+atoms-package+'. This reader is case sensitive,
 so symbol `$OK' will be different from `$ok'."
-  (let* ((line (bt2:with-recursive-lock-held ((imap-sock-lock conn))
-                 (%read-cmdline (imap-text-stream conn)))))
+  (let* ((line (%read-cmdline (imap-text-stream conn))))
     (v:trace :input "~A" line)
     (cond
       ((eq (car line) :untagged)
@@ -334,9 +340,10 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
 (defmethod imap-handle ((conn imap) cmd arg)
   (v:debug :imap "[~A] ~A" cmd arg))
 
-;; XXX: this doesn't seem to work well.. :-\ Don't use it.
-(defgeneric imap-command-sync (imap cmdstr &optional handler))
 (defmethod imap-command-sync ((conn imap) cmd &optional handler)
+  "Synchronously execute command. This holds the mutex and parses server
+output until a tagged response for our command comes back (at which
+point `handler' will be invoked with the argument)."
   (bt2:with-recursive-lock-held ((imap-sock-lock conn))
     (let ((reqid (imap-command conn cmd handler)))
       (loop until (eq reqid (imap-parse conn))))))
@@ -349,19 +356,21 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
     (setf (imap-sock conn) sock
           (imap-sock-lock conn) (bt2:make-recursive-lock :name tname))
     (labels
-        ((login ()
-           (setf (imap-thread conn)
-                 (bt2:make-thread (lambda ()
-                                    (setf (imap-running conn) t)
-                                    (imap-read-loop conn))
-                                  :name tname))
-           (imap-command
-            conn `(:LOGIN ,(imap-user conn) ,(imap-password conn))
-            (lambda (args)
-              (when-ok args
-                (imap-handle conn '$OK args)
-                (v:debug :imap "CAPAB: ~A" (imap-capability conn))
-                (imap-on-connect conn)))))
+        ((login (&aux authenticated)
+           (imap-command-sync conn `(:LOGIN ,(imap-user conn)
+                                            ,(imap-password conn))
+                              (lambda (args)
+                                (when-ok args
+                                  (imap-handle conn '$OK args)
+                                  (v:debug :imap "CAPAB: ~A" (imap-capability conn))
+                                  (setf (imap-thread conn)
+                                        (bt2:make-thread (lambda ()
+                                                           (setf (imap-running conn) t)
+                                                           (imap-read-loop conn))
+                                                         :name tname))
+                                  (imap-on-connect conn)
+                                  (setf authenticated t))))
+           authenticated)
          (setup-ssl ()
            (setf (imap-bin-stream conn)
                  (cl+ssl:make-ssl-client-stream (sock:socket-stream sock) :verify nil))
@@ -395,6 +404,11 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
          (imap-parse conn)
          (login))))))
 
+(defmethod imap-maybe-reconnect ((conn imap))
+  (unless (imap-sock conn)
+    (when (imap-reconnect conn)
+      (imap-connect conn))))
+
 (defmethod imap-close ((conn imap))
   (when (imap-sock conn)
     (sock:socket-close (imap-sock conn)))
@@ -410,7 +424,8 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
         with stream = (imap-text-stream conn)
         while (imap-running conn)
         do (sock:wait-for-input sock :timeout 1)
-           (loop while (and (imap-running conn)
-                            (listen stream))
-                 do (imap-parse conn)))
+           (bt2:with-recursive-lock-held ((imap-sock-lock conn))
+             (loop while (and (imap-running conn)
+                              (listen stream))
+                   do (imap-parse conn))))
   (v:debug :imap "Loop terminated (~A)" (imap-host conn)))
