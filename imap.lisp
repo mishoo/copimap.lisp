@@ -53,7 +53,18 @@ will not be attempted over plain text.")
 
    (reconnect :initform t :accessor imap-reconnect
               :documentation "Wether to attempt reconnecting when the socket is closed. See
-`imap-maybe-reconnect'."))
+`imap-maybe-reconnect'.")
+
+   (idling :initform nil :accessor imap-idling
+           :documentation "Used internally to keep track of wether an IDLE command is in
+progress. See `imap-start-idle'.")
+
+   (poll-time :initform 1200 :initarg :poll-time :accessor imap-poll-time
+              :documentation "If non-NIL, the read loop will send NOOP commands every so many
+seconds. Default is 20 minutes.")
+
+   (last-command-time :initform nil :accessor imap-last-command-time
+                      :documentation "Used internally for polling (keeps track of last command time)."))
 
   (:documentation "Low-level IMAP class.
 
@@ -97,6 +108,8 @@ results from the server."))
 (defgeneric imap-handle (imap cmd arg))
 (defgeneric imap-command (imap cmdstr &optional handler))
 (defgeneric imap-command-sync (imap cmdstr &optional handler))
+(defgeneric imap-start-idle (imap &optional handler))
+(defgeneric imap-stop-idle (imap))
 (defgeneric imap-has-capability (imap capability))
 (defgeneric imap-write (imap str))
 
@@ -121,9 +134,11 @@ subclasses, for example to re-SELECT the appropriate mailbox.")
                 arg)))
 
 (defmethod imap-write ((conn imap) (data string))
-  (let ((stream (imap-text-stream conn)))
-    (write-line data stream)
-    (force-output stream)))
+  (v:trace :send "~A" data)
+  (bt2:with-recursive-lock-held ((imap-sock-lock conn))
+    (let ((stream (imap-text-stream conn)))
+      (write-line data stream)
+      (force-output stream))))
 
 (defun imap-new-request-id (conn handler)
   (let ((reqid (format nil "A~D" (incf (imap-cmdseq conn)))))
@@ -141,7 +156,6 @@ subclasses, for example to re-SELECT the appropriate mailbox.")
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
   "Send a raw command. Use this for simple commands, or if you know what
 you're doing."
-  (imap-maybe-reconnect conn)
   (v:debug :send "~A" cmdstr)
   (let ((reqid (imap-new-request-id conn handler))
         (stream (imap-text-stream conn)))
@@ -157,9 +171,7 @@ you're doing."
 
 (defmethod imap-command ((conn imap) (cmd cons)
                          &optional handler
-                         &aux (stream (progn
-                                        (imap-maybe-reconnect conn)
-                                        (imap-text-stream conn))))
+                         &aux (stream (imap-text-stream conn)))
   "Send a command to the server. The command will be assembled from
 `cmd', which should be a list. A few examples:
 
@@ -283,6 +295,61 @@ invoke `imap-handle'."
         (force-output stream)
         reqid))))
 
+(defmethod imap-command :before ((conn imap) cmd &optional handler)
+  (declare (ignore cmd handler))
+  (imap-maybe-reconnect conn)
+  (setf (imap-last-command-time conn) (get-universal-time)))
+
+(defmethod imap-command :around ((conn imap) cmd &optional handler)
+  "Wrapper around `imap-command' which turns off IDLE mode."
+  (declare (ignore cmd handler))
+  (cond
+    ((imap-idling conn)
+     (bt2:with-recursive-lock-held ((imap-sock-lock imap))
+       (if (imap-idling conn)
+           (progn
+             (imap-stop-idle conn)
+             (call-next-method))
+           (call-next-method))))
+    (t (call-next-method))))
+
+(defmethod imap-start-idle ((conn imap) &optional handler)
+  "Enter IDLE mode. While idling the server can send notifications that
+will be handled by the read loop thread via `imap-parse'. Sending any
+`imap-command' while a connection is idling will automatically stop
+IDLE mode (otherwise the server would just end IDLE mode but fail to
+execute the command). Note that IDLE mode will not be automatically
+resumed, you'll have to call `imap-start-idle' again."
+  (unless (imap-idling conn)
+    (bt2:with-recursive-lock-held ((imap-sock-lock conn))
+      (unless (imap-idling conn)
+        (setf (imap-idling conn)
+              (imap-command conn "IDLE"
+                            (lambda (&rest args)
+                              (v:debug :imap "IDLE mode finished (~A)" (imap-host conn))
+                              (setf (imap-idling conn) nil)
+                              (when handler (apply handler args)))))
+        (loop until (equal :continue (imap-parse conn)))
+        (v:debug :imap "Entered IDLE mode (~A)" (imap-host conn))))))
+
+(defmethod imap-stop-idle ((conn imap))
+  "Ends IDLE mode."
+  (when (imap-idling conn)
+    (bt2:with-recursive-lock-held ((imap-sock-lock imap))
+      (let ((reqid (imap-idling conn)))
+        (when reqid
+          (imap-write conn "DONE")
+          (loop until (equal reqid (imap-parse conn)))
+          (setf (imap-idling conn) nil))))))
+
+(defmethod imap-command-sync ((conn imap) cmd &optional handler)
+  "Synchronously execute command. This holds the mutex and parses server
+output until a tagged response for our command comes back (at which
+point `handler' will be invoked with the argument)."
+  (bt2:with-recursive-lock-held ((imap-sock-lock conn))
+    (let ((reqid (imap-command conn cmd handler)))
+      (loop until (equal reqid (imap-parse conn))))))
+
 (defmethod imap-parse ((conn imap))
   "Parse one command line from the server. Holds the mutex while the
 command is read. Invokes `imap-handle' for untagged notifications. On
@@ -357,20 +424,15 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
 (defmethod imap-handle ((conn imap) cmd arg)
   (v:debug :imap "[~A] ~A" cmd arg))
 
-(defmethod imap-command-sync ((conn imap) cmd &optional handler)
-  "Synchronously execute command. This holds the mutex and parses server
-output until a tagged response for our command comes back (at which
-point `handler' will be invoked with the argument)."
-  (bt2:with-recursive-lock-held ((imap-sock-lock conn))
-    (let ((reqid (imap-command conn cmd handler)))
-      (loop until (equal reqid (imap-parse conn))))))
-
 (defmethod imap-connect ((conn imap))
+  "Starts the IMAP connection. After successful authentication the read
+loop thread is started. Returns `T' on success."
   (let* ((sock (sock:socket-connect (imap-host conn)
                                     (imap-port conn)
                                     :element-type '(unsigned-byte 8)))
          (tname (format nil "IMAP:~A/~A" (imap-host conn) (imap-user conn))))
     (setf (imap-sock conn) sock
+          (imap-idling conn) nil
           (imap-sock-lock conn) (bt2:make-recursive-lock :name tname))
     (labels
         ((login (&aux authenticated)
@@ -433,13 +495,20 @@ point `handler' will be invoked with the argument)."
         (imap-sock conn) nil
         (imap-bin-stream conn) nil
         (imap-text-stream conn) nil
-        (imap-thread conn) nil))
+        (imap-thread conn) nil
+        (imap-idling conn) nil))
 
 (defmethod imap-read-loop ((conn imap))
   (v:debug :imap "Starting read loop (~A)" (imap-host conn))
-  (loop with sock = (imap-sock conn)
+  (loop with poll-time = (imap-poll-time conn)
+        with sock = (imap-sock conn)
         with stream = (imap-text-stream conn)
         while (imap-running conn)
+        when (and poll-time
+                  (<= poll-time
+                      (- (get-universal-time)
+                         (imap-last-command-time conn))))
+          do (imap-command conn "NOOP")
         do (sock:wait-for-input sock :timeout 1)
            (bt2:with-recursive-lock-held ((imap-sock-lock conn))
              (loop while (and (imap-running conn)
