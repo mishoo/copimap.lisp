@@ -24,7 +24,7 @@
                   (%skip-whitespace input))
         finally (read-char input)))
 
-(defun %read-token (input &optional in-seq)
+(defun %read-token (input &optional in-seq reqid)
   (%skip-whitespace input)
   (let ((ch (read-char input)))
     (labels ((%read-atom (allow-*)
@@ -86,6 +86,8 @@
 
         (t
          (let ((atom (%read-atom nil)))
+           (when reqid
+             (return-from %read-token atom))
            (setf atom
                  (block nil
                    (rx:register-groups-bind (a colon b) ("^(\\d+)(:)?(\\d+)?$" atom)
@@ -140,7 +142,7 @@
                    (loop for tok = (%read-token input)
                          while tok collect tok))))))
       (t
-       (list (%read-token input)
+       (list (%read-token input nil t)
              (%read-token input)
              (%maybe-arg input)
              (read-line input))))))

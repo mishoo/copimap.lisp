@@ -36,7 +36,7 @@ will not be attempted over plain text.")
    (cmdseq :initform 0 :accessor imap-cmdseq
            :documentation "Current request id, incremented on each `imap-command'.")
 
-   (cmdqueue :initform (make-hash-table) :accessor imap-cmdqueue
+   (cmdqueue :initform (make-hash-table :test 'equal) :accessor imap-cmdqueue
              :documentation "Handlers for commands awaiting replies.")
 
    (sock-lock :accessor imap-sock-lock
@@ -108,8 +108,7 @@ subclasses, for example to re-SELECT the appropriate mailbox.")
     (force-output stream)))
 
 (defun imap-new-request-id (conn handler)
-  (let ((reqid (intern (format nil "A~D" (incf (imap-cmdseq conn)))
-                       +atoms-package+)))
+  (let ((reqid (format nil "A~D" (incf (imap-cmdseq conn)))))
     (when handler
       (setf (gethash reqid (imap-cmdqueue conn))
             (list handler)))
@@ -129,7 +128,7 @@ you're doing."
   (let ((reqid (imap-new-request-id conn handler))
         (stream (imap-text-stream conn)))
     (bt2:with-recursive-lock-held ((imap-sock-lock conn))
-      (write-string (symbol-name reqid) stream)
+      (write-string reqid stream)
       (write-char #\Space stream)
       (write-line cmdstr stream)
       (force-output stream))
@@ -259,7 +258,7 @@ invoke `imap-handle'."
               (write-sequence tok (imap-bin-stream conn))
               (force-output (imap-bin-stream conn))))))
       (let ((reqid (imap-new-request-id conn handler)))
-        (write-string (symbol-name reqid) stream)
+        (write-string reqid stream)
         (write-char #\Space stream)
         (write-delimited #\Space cmd)
         (write-char #\Newline stream)
@@ -330,8 +329,8 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
   (when (and (listp (car arg))
              (eq '$TAG (caar arg)))
     (let ((reqid (cadar arg)))
-      (when (stringp reqid)
-        (setf reqid (intern reqid +atoms-package+)))
+      (when (symbolp reqid)
+        (setf reqid (symbol-name reqid)))
       (let ((handler (gethash reqid (imap-cmdqueue conn))))
         (if handler
             (push (cdr arg) (cdr handler))
@@ -346,7 +345,7 @@ output until a tagged response for our command comes back (at which
 point `handler' will be invoked with the argument)."
   (bt2:with-recursive-lock-held ((imap-sock-lock conn))
     (let ((reqid (imap-command conn cmd handler)))
-      (loop until (eq reqid (imap-parse conn))))))
+      (loop until (equal reqid (imap-parse conn))))))
 
 (defmethod imap-connect ((conn imap))
   (let* ((sock (sock:socket-connect (imap-host conn)
