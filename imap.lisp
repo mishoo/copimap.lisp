@@ -10,7 +10,10 @@
          :documentation "IMAP username")
 
    (password :initarg :password :accessor imap-password
-             :documentation "IMAP user password")
+             :documentation "IMAP user password. Pass either the raw password as string, or a list
+to invoke an external program (should write the password to standard
+output). External programs are run via `uiop:run-program'. If the form
+is (:shell \"command\") then we'll pass :force-shell `T'.")
 
    (use-ssl :initarg :use-ssl :accessor imap-use-ssl :initform t
             :documentation "Pass `T' to use SSL (default), `:STARTTLS' or
@@ -71,6 +74,21 @@ results from the server."))
           (if (eq t (imap-use-ssl imap))
               993
               143))))
+
+(defmethod imap-password ((conn imap))
+  (let ((pass (slot-value conn 'password)))
+    (if (not (consp pass))
+        pass
+        (let ((shell nil))
+          (when (eq :shell (car pass))
+            (setf pass (cdr pass) shell t))
+          (rx:regex-replace "\\s+$"
+                            (with-output-to-string (out)
+                              (with-output-to-string (err)
+                                (uiop:run-program pass :output out
+                                                       :error-output err
+                                                       :force-shell shell)))
+                            "")))))
 
 (defgeneric imap-connect (imap))
 (defgeneric imap-close (imap))
