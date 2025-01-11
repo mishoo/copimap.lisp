@@ -113,11 +113,12 @@ results from the server."))
 (defgeneric imap-has-capability (imap capability))
 (defgeneric imap-write (imap str))
 
-(defgeneric imap-on-connect (imap))
+(defgeneric imap-on-connect (imap)
+  (:documentation "Will be invoked after successful authentication. Could be useful in
+subclasses, for example to re-SELECT the appropriate mailbox."))
 
 (defmethod imap-on-connect ((conn imap))
-  "Will be invoked after successful authentication. Could be useful in
-subclasses, for example to re-SELECT the appropriate mailbox.")
+  (v:debug :imap "Connected to ~A (~A)" (imap-host conn) (imap-user conn)))
 
 (defmethod imap-has-capability ((conn imap) (cap string))
   (find cap (imap-capability conn) :test #'equalp))
@@ -314,7 +315,7 @@ invoke `imap-handle'."
     (t (call-next-method))))
 
 (defmethod imap-start-idle ((conn imap) &optional handler)
-  "Enter IDLE mode. While idling the server can send notifications that
+  "Enter IDLE mode. While idling the server can send notifications which
 will be handled by the read loop thread via `imap-parse'. Sending any
 `imap-command' while a connection is idling will automatically stop
 IDLE mode (otherwise the server would just end IDLE mode but fail to
@@ -500,12 +501,11 @@ loop thread is started. Returns `T' on success."
 
 (defmethod imap-read-loop ((conn imap))
   (v:debug :imap "Starting read loop (~A)" (imap-host conn))
-  (loop with poll-time = (imap-poll-time conn)
-        with sock = (imap-sock conn)
+  (loop with sock = (imap-sock conn)
         with stream = (imap-text-stream conn)
         while (imap-running conn)
-        when (and poll-time
-                  (<= poll-time
+        when (and (imap-poll-time conn)
+                  (<= (imap-poll-time conn)
                       (- (get-universal-time)
                          (imap-last-command-time conn))))
           do (imap-command conn "NOOP")

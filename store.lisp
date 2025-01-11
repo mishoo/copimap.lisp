@@ -13,14 +13,8 @@
 (defun store-folder (store folder)
   (fad:merge-pathnames-as-directory (store-path store) folder))
 
-(defun sqlite-table-exists (db table)
-  (dbi:fetch
-   (dbi:execute
-    (dbi:prepare db
-        "SELECT name FROM sqlite_master WHERE type = 'table' and name = ? LIMIT 1")
-    (list table))))
-
 (defgeneric store-get-last-uid (store))
+(defgeneric store-save-mailbox (store mailbox))
 (defgeneric store-save-messages (store messages))
 (defgeneric store-save-flags (store flags))
 (defgeneric store-save-labels (store labels))
@@ -35,39 +29,16 @@
       (unless (fad:file-exists-p db-file)
         (with-open-file (out db-file :if-does-not-exist :create)))
       (setf db (dbi:connect :sqlite3 :database-name db-file))
-      (unless (sqlite-table-exists db "message")
-        (store-create-db store)))))
+      (dbi:do-sql db "PRAGMA foreign_keys = ON")
+      (store-upgrade-db store nil))))
 
-(defgeneric store-create-db (store)
-  (:method ((store store))
-    (let ((queries
-            '("CREATE TABLE message (
-                 uid UNSIGNED INTEGER PRIMARY KEY,
-                 path VARCHAR(255),
-                 internaldate INTEGER,
-                 mtime UNSIGNED INTEGER
-               )"
-              "CREATE INDEX idx_message_mtime ON message(mtime)"
-              "CREATE TABLE flag (name VARCHAR(255) PRIMARY KEY)"
-              "CREATE TABLE label (name VARCHAR(255) PRIMARY KEY)"
-              "CREATE TABLE map_flag_message (
-                 flag VARCHAR(255),
-                 message UNSIGNED INTEGER,
-                 PRIMARY KEY (flag, message),
-                 FOREIGN KEY (flag) REFERENCES flag(name) ON DELETE CASCADE ON UPDATE CASCADE,
-                 FOREIGN KEY (message) REFERENCES message(uid) ON DELETE CASCADE ON UPDATE CASCADE
-               )"
-              "CREATE TABLE map_label_message (
-                 label VARCHAR(255),
-                 message UNSIGNED INTEGER,
-                 PRIMARY KEY (label, message),
-                 FOREIGN KEY (label) REFERENCES label(name) ON DELETE CASCADE ON UPDATE CASCADE,
-                 FOREIGN KEY (message) REFERENCES message(uid) ON DELETE CASCADE ON UPDATE CASCADE
-               )"
-              )))
-      (loop with db = (store-db store)
-            for q in queries
-            do (cl-dbi:do-sql db q)))))
+(defmethod store-save-mailbox ((store store) (mailbox mailbox))
+  (loop with db = (store-db store)
+        with query = (dbi:prepare db "INSERT INTO mailbox (key, intval) VALUES (?, ?)
+                                      ON CONFLICT(key) DO UPDATE SET intval = ?")
+        for key in '(exists recent unseen uidvalidity uidnext highestmodseq)
+        for val = (slot-value mailbox key)
+        do (dbi:execute query (list (symbol-name key) val))))
 
 (defmethod store-save-flags ((store store) flags)
   (let ((sql (dbi:prepare (store-db store)
@@ -86,17 +57,11 @@
                                  name))))))
 
 (defmethod store-get-last-uid ((store store))
-  (car (dbi:fetch
-        (dbi:execute
-         (dbi:prepare (store-db store)
-             "SELECT uid FROM message ORDER BY uid DESC LIMIT 1")))))
+  (sql-single (store-db store)
+              "SELECT uid FROM message ORDER BY uid DESC LIMIT 1"))
 
 (defmethod store-get-by-uid ((store store) uid)
-  (car (dbi:fetch
-        (dbi:execute
-         (dbi:prepare (store-db store)
-             "SELECT * FROM message WHERE uid = ?")
-         (list uid)))))
+  (sql-row (store-db store) "SELECT * FROM message WHERE uid = ?" uid))
 
 (defmethod store-close ((store store))
   (dbi:disconnect (store-db store)))
@@ -107,10 +72,9 @@
   ())
 
 (defmethod initialize-instance :after ((store maildir-store) &key &allow-other-keys)
-  (with-slots (path db) store
-    (ensure-directories-exist (store-folder store "new/"))
-    (ensure-directories-exist (store-folder store "cur/"))
-    (ensure-directories-exist (store-folder store "tmp/"))))
+  (ensure-directories-exist (store-folder store "new/"))
+  (ensure-directories-exist (store-folder store "cur/"))
+  (ensure-directories-exist (store-folder store "tmp/")))
 
 (defgeneric maildir-message-filename (store uid))
 
@@ -119,11 +83,8 @@
     (let* ((time (get-universal-time))
            (prefix (if (= time prev-time)
                        (format nil "~D_~D" time (incf id))
-                       (progn
-                         (setf prev-time time
-                               id 0)
-                         (format nil "~D" time)))))
-      (format nil "~A.~A,U=~D"
+                       (format nil "~D" (setf id 0 prev-time time)))))
+      (format nil "imapsync.~A.~A,U=~D."
               prefix
               (machine-instance)
               uid))))

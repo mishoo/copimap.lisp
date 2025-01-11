@@ -10,7 +10,8 @@
    (recent :initform 0 :initarg :recent :accessor mailbox-recent)
    (unseen :initform 0 :initarg :unseen :accessor mailbox-unseen)
    (uidvalidity :initform nil :initarg :uidvalidity :accessor mailbox-uidvalidity)
-   (uidnext :initform 0 :initarg :uidnext :accessor mailbox-uidnext)))
+   (uidnext :initform 0 :initarg :uidnext :accessor mailbox-uidnext)
+   (highestmodseq :initform 0 :initarg :highestmodseq :accessor mailbox-highestmodseq)))
 
 (defclass imap+mailbox (imap mailbox)
   ((local-store :initarg :local-store :accessor mailbox-local-store)))
@@ -45,6 +46,7 @@
         ($UNSEEN (setf (mailbox-unseen conn) (cadr arg)))
         ($UIDVALIDITY (setf (mailbox-uidvalidity conn) (cadr arg)))
         ($UIDNEXT (setf (mailbox-uidnext conn) (cadr arg)))
+        ($HIGHESTMODSEQ (setf (mailbox-highestmodseq conn) (cadr arg)))
         (t (call-next-method))))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$FLAGS)) arg)

@@ -26,4 +26,5 @@
                (:file "mUTF-7")
                (:file "imap")
                (:file "mailbox")
-               (:file "store")))
+               (:file "store")
+               (:file "store-db")))
