@@ -115,7 +115,7 @@
         (%read-token input)
       (%skip-whitespace input))))
 
-(defun %read-cmdline (input)
+(defun parse-imap-cmdline (input)
   (let ((ch (peek-char nil input)))
     (cond
       ((char= ch #\+)
@@ -170,3 +170,128 @@
       (local-time:encode-timestamp 0 ss mm hh date month year
                                    :offset (+ (* offset-hour 3600)
                                               (* offset-min 60))))))
+
+(defun %skip-more-whitespace (input)
+  (loop for ch = (peek-char nil input nil)
+        while ch
+        while (or (char= #\Space ch)
+                  (char= #\Tab ch)
+                  (char= #\Newline ch))
+        do (read-char input)))
+
+(defun %read-until-char (input end)
+  (with-output-to-string (out)
+    (loop for ch = (read-char input)
+          until (char= end ch)
+          do (write-char ch out))))
+
+(defun parse-rfc822-headers (input)
+  (labels
+      ((continued ()
+         (let ((ch (peek-char nil input)))
+           (or (char= #\Space ch)
+               (char= #\Tab ch))))
+
+       (read-name ()
+         (intern (%read-until-char input #\:) +atoms-package+))
+
+       (read-value ()
+         (with-output-to-string (out)
+           (loop for ch = (read-char input) do
+             (cond
+               ((and (char= #\Newline ch)
+                     (continued))
+                (%skip-more-whitespace input)
+                (write-char #\Space out))
+               ((char= #\Newline ch)
+                (return))
+               (t
+                (write-char ch out))))))
+
+       (read-header ()
+         (cons (read-name)
+               (progn
+                 (%skip-more-whitespace input)
+                 (read-value)))))
+
+    (loop until (char= #\Newline (peek-char nil input))
+          collect (read-header)
+          finally (read-char input))))
+
+(defun decode-header (string)
+  (with-output-to-string (out)
+    (with-input-from-string (in string)
+      (let ((buffer (make-array 0 :element-type '(unsigned-byte 8)
+                                  :adjustable t :fill-pointer 0))
+            (charset nil))
+        (flet ((dump ()
+                 (unless (zerop (length buffer))
+                   (write-string (babel:octets-to-string buffer :encoding charset) out)
+                   (setf (fill-pointer buffer) 0)))
+
+               (read-chunk ()
+                 (%read-until-char in #\?))
+
+               (hex-byte (c1 c2)
+                 (declare (type character c1 c2))
+                 (parse-integer (format nil "~C~C" c1 c2)
+                                :radix 16)))
+          (declare (inline dump read-chunk hex-byte))
+          (loop with in-q = nil
+                for ch = (read-char in nil)
+                while ch do
+                  (cond
+                    (in-q (cond
+                            ((char= #\_ ch)
+                             (dump)
+                             (write-char #\Space out))
+
+                            ((char= #\? ch)
+                             (assert (char= #\= (read-char in)))
+                             (dump)
+                             (setf in-q nil)
+                             (%skip-more-whitespace in))
+
+                            ((char= #\= ch)
+                             (vector-push-extend (hex-byte (read-char in)
+                                                           (read-char in))
+                                                 buffer))
+
+                            (t
+                             (dump)
+                             (write-char ch out))))
+
+                    ((and (char= #\= ch)
+                          (eql #\? (peek-char nil in nil)))
+                     (read-char in)
+                     (setf charset (intern (string-upcase (read-chunk)) :keyword))
+                     (ecase (read-char in)
+                       ((#\q #\Q)
+                        (assert (char= #\? (read-char in)))
+                        (setf in-q t))
+
+                       ((#\b #\B)
+                        (assert (char= #\? (read-char in)))
+                        (write-string (babel:octets-to-string
+                                       (base64:base64-string-to-usb8-array (read-chunk))
+                                       :encoding charset)
+                                      out)
+                        (assert (char= #\= (read-char in)))
+                        (%skip-more-whitespace in))))
+
+                    (t
+                     (write-char ch out)))))))))
+
+(defun encode-header (str)
+  (format nil "=?utf-8?b?~A?="
+          (cl-base64:usb8-array-to-base64-string
+           (trivial-utf-8:string-to-utf-8-bytes str))))
+
+(defun write-rfc822-headers (headers &optional (output t))
+  (loop with crlf = #.(coerce #(#\Return #\Newline) 'string)
+        for (key . val) in headers do
+          (write-string (if (symbolp key) (symbol-name key) key) output)
+          (write-string ": " output)
+          (write-string val output)
+          (write-string crlf output)
+        finally (write-string crlf output)))

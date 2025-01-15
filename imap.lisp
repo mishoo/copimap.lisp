@@ -357,7 +357,7 @@ command is read. Invokes `imap-handle' for untagged notifications. On
 tagged responses it invokes the associated handler from
 `imap-cmdqueue', if found.
 
-The command line, as returned by `%read-cmdline', is a list of
+The command line, as returned by `parse-imap-cmdline', is a list of
 tokens (similar to the ones that you send to `imap-command'). The
 first is `:untagged' for notifications or `:continue' for continuation
 requests, otherwise it's a request ID followed by data returned for
@@ -368,7 +368,7 @@ and interned into `+atoms-package+' (IMAPSYNC-ATOMS). Note that the
 reader syntax in `IMAPSYNC' defines a custom reader for $ which
 interns symbols in `+atoms-package+'. This reader is case sensitive,
 so symbol `$OK' will be different from `$ok'."
-  (let* ((line (%read-cmdline (imap-text-stream conn))))
+  (let* ((line (parse-imap-cmdline (imap-text-stream conn))))
     (v:trace :input "~A" line)
     (cond
       ((eq (car line) :untagged)
