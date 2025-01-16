@@ -44,17 +44,13 @@
   (let ((sql (dbi:prepare (store-db store)
                  "INSERT INTO flag (name) VALUES (?) ON CONFLICT DO NOTHING")))
     (loop for name in flags do
-      (dbi:execute sql (list (if (symbolp name)
-                                 (symbol-name name)
-                                 name))))))
+      (dbi:execute sql (list (as-string name))))))
 
 (defmethod store-save-labels ((store store) labels)
   (let ((sql (dbi:prepare (store-db store)
                  "INSERT INTO label (name) VALUES (?) ON CONFLICT DO NOTHING")))
     (loop for name in labels do
-      (dbi:execute sql (list (if (symbolp name)
-                                 (symbol-name name)
-                                 name))))))
+      (dbi:execute sql (list (as-string name))))))
 
 (defmethod store-get-last-uid ((store store))
   (sql-single (store-db store)
@@ -134,12 +130,6 @@
                  (store-save-labels store labels)
                  (dbi:execute insert-message (list uid filename internaldate mtime))
                  (loop for flag in flags
-                       for flag-name = (if (symbolp flag)
-                                           (symbol-name flag)
-                                           flag)
-                       do (dbi:execute add-flags (list flag-name uid)))
+                       do (dbi:execute add-flags (list (as-string flag) uid)))
                  (loop for label in labels
-                       for label-name = (if (symbolp label)
-                                            (symbol-name label)
-                                            label)
-                       do (dbi:execute add-labels (list label-name uid)))))))
+                       do (dbi:execute add-labels (list (as-string label) uid)))))))

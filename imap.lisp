@@ -24,7 +24,7 @@ will not be attempted over plain text.")
    (port :initarg :port :accessor imap-port :initform nil
          :documentation "Server port. Will default to 143 or 993, depending on the value of `use-ssl'.")
 
-   (capability :accessor imap-capability
+   (capability :reader imap-capability
                :documentation "Filled from the server (list of uppercase strings).")
 
    (sock :initform nil :accessor imap-sock
@@ -120,19 +120,17 @@ subclasses, for example to re-SELECT the appropriate mailbox."))
 (defmethod imap-on-connect ((conn imap))
   (v:debug :imap "Connected to ~A (~A)" (imap-host conn) (imap-user conn)))
 
-(defmethod imap-has-capability ((conn imap) (cap string))
-  (find cap (imap-capability conn) :test #'equalp))
+(defmethod (setf imap-capability) (value (conn imap))
+  (setf (slot-value conn 'capability)
+        (map 'vector
+             (lambda (x)
+               (intern (string-upcase (as-string x)) :keyword))
+             value)))
 
 (defmethod imap-has-capability ((conn imap) (cap symbol))
-  (imap-has-capability conn (symbol-name cap)))
-
-(defun imap-set-capability (conn arg)
-  (setf (imap-capability conn)
-        (mapcar (lambda (x)
-                  (if (stringp x)
-                      (string-upcase x)
-                      (symbol-name x)))
-                arg)))
+  "Checks if the server advertises the `cap' capability (should be a
+keyword symbol)."
+  (find cap (imap-capability conn)))
 
 (defmethod imap-write ((conn imap) (data string))
   (v:trace :send "~A" data)
@@ -320,7 +318,8 @@ will be handled by the read loop thread via `imap-parse'. Sending any
 `imap-command' while a connection is idling will automatically stop
 IDLE mode (otherwise the server would just end IDLE mode but fail to
 execute the command). Note that IDLE mode will not be automatically
-resumed, you'll have to call `imap-start-idle' again."
+resumed, you'll have to call `imap-start-idle' again. See also macro
+`with-idle-resume'."
   (unless (imap-idling conn)
     (bt2:with-recursive-lock-held ((imap-sock-lock conn))
       (unless (imap-idling conn)
@@ -342,6 +341,21 @@ resumed, you'll have to call `imap-start-idle' again."
           (imap-write conn "DONE")
           (loop until (equal reqid (imap-parse conn)))
           (setf (imap-idling conn) nil))))))
+
+(defmacro with-idle-resume (conn &body body)
+  "When the connection is idling, stop IDLE mode, execute `body' and then
+restart IDLE mode. When IDLE mode is off, just execute `body'."
+  (a:once-only (conn
+                (thunk `(lambda () ,@body)))
+    `(if (imap-idling ,conn)
+         (bt2:with-recursive-lock-held ((imap-sock-lock ,conn))
+           (if (imap-idling ,conn)
+               (prog2
+                   (imap-stop-idle ,conn)
+                   (funcall ,thunk)
+                 (imap-start-idle ,conn))
+               (funcall ,thunk)))
+         (funcall ,thunk))))
 
 (defmethod imap-command-sync ((conn imap) cmd &optional handler)
   "Synchronously execute command. This holds the mutex and parses server
@@ -394,10 +408,10 @@ does that)."
   (when (listp (car arg))
     (case (caar arg)
       ($CAPABILITY
-       (imap-set-capability conn (cdar arg))))))
+       (setf (imap-capability conn) (cdar arg))))))
 
 (defmethod imap-handle ((conn imap) (cmd (eql '$CAPABILITY)) arg)
-  (imap-set-capability conn arg))
+  (setf (imap-capability conn) arg))
 
 (defmethod imap-handle ((conn imap) (cmd (eql '$NO)) arg)
   (v:warn :imap "Got untagged NO: ~A" arg))
@@ -414,9 +428,7 @@ the handler when the command is done.
 https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
   (when (and (listp (car arg))
              (eq '$TAG (caar arg)))
-    (let ((reqid (cadar arg)))
-      (when (symbolp reqid)
-        (setf reqid (symbol-name reqid)))
+    (let ((reqid (as-string (cadar arg))))
       (let ((handler (gethash reqid (imap-cmdqueue conn))))
         (if handler
             (push (cdr arg) (cdr handler))
@@ -503,12 +515,13 @@ loop thread is started. Returns `T' on success."
   (v:debug :imap "Starting read loop (~A)" (imap-host conn))
   (loop with sock = (imap-sock conn)
         with stream = (imap-text-stream conn)
+        for poll-time = (imap-poll-time conn)
         while (imap-running conn)
-        when (and (imap-poll-time conn)
-                  (<= (imap-poll-time conn)
-                      (- (get-universal-time)
-                         (imap-last-command-time conn))))
-          do (imap-command conn "NOOP")
+        when (and poll-time
+                  (<= poll-time (- (get-universal-time)
+                                   (imap-last-command-time conn))))
+          do (with-idle-resume conn
+               (imap-command conn "NOOP"))
         do (sock:wait-for-input sock :timeout 1)
            (bt2:with-recursive-lock-held ((imap-sock-lock conn))
              (loop while (and (imap-running conn)

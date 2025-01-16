@@ -12,6 +12,14 @@
                (*readtable* *preserve-case-readtable*))
            (read stream)))))
 
+(declaim (inline as-string))
+(defun as-string (thing)
+  (etypecase thing
+    (null "NIL")
+    (string thing)
+    (symbol (symbol-name thing))
+    (integer (format nil "~D" thing))))
+
 (defun %skip-whitespace (input)
   (loop while (char= #\Space (peek-char nil input))
         do (read-char input)))
@@ -290,7 +298,7 @@
 (defun write-rfc822-headers (headers &optional (output t))
   (loop with crlf = #.(coerce #(#\Return #\Newline) 'string)
         for (key . val) in headers do
-          (write-string (if (symbolp key) (symbol-name key) key) output)
+          (write-string (as-string key) output)
           (write-string ": " output)
           (write-string val output)
           (write-string crlf output)
