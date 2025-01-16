@@ -64,7 +64,11 @@ progress. See `imap-start-idle'.")
 seconds. Default is 20 minutes.")
 
    (last-command-time :initform nil :accessor imap-last-command-time
-                      :documentation "Used internally for polling (keeps track of last command time)."))
+                      :documentation "Used internally for polling (keeps track of last command time).")
+
+   (utf-7 :initform nil :reader imap-utf-7
+          :documentation "Whether we should do mUTF-7 conversion for ASTRING-s. Will be set when
+we receive capabilities if IMAP4rev1 is advertised."))
 
   (:documentation "Low-level IMAP class.
 
@@ -125,7 +129,31 @@ subclasses, for example to re-SELECT the appropriate mailbox."))
         (map 'vector
              (lambda (x)
                (intern (string-upcase (as-string x)) :keyword))
-             value)))
+             value))
+  (when (imap-has-capability conn :imap4rev1)
+    (setf (slot-value conn 'utf-7) t)))
+
+(declaim (inline destr))
+(defun destr (conn x)
+  (if (imap-utf-7 conn)
+      (typecase x
+        (null x)
+        (string (mutf-7-to-string x))
+        (symbol (intern (mutf-7-to-string (symbol-name x))
+                        (symbol-package x)))
+        (t x))
+      x))
+
+(declaim (inline enstr))
+(defun enstr (conn x)
+  (if (imap-utf-7 conn)
+      (typecase x
+        (null x)
+        (string (string-to-mutf-7 x))
+        (symbol (intern (string-to-mutf-7 (symbol-name x))
+                        (symbol-package x)))
+        (t x))
+      x))
 
 (defmethod imap-has-capability ((conn imap) (cap symbol))
   "Checks if the server advertises the `cap' capability (should be a
@@ -189,6 +217,9 @@ but some keywords are treated specially at the start of a list:
 You can mix :seq and :range:
 
     (:seq 1 (:range 5 10) 15) -> 1,5:10,15
+
+You should wrap in (:astr ...) strings/symbols which might need to be
+mUTF-7 encoded, like mailbox names or flags.
 
 The following are converted to the form BODY[1.1], used in FETCH
 commands; examples:
@@ -275,6 +306,8 @@ invoke `imap-handle'."
                  (write-char #\[ stream)
                  (write-delimited #\. (cdr tok))
                  (write-char #\] stream))
+                (:astr
+                 (write-tok (enstr conn (cadr tok))))
                 (t
                  (write-char #\( stream)
                  (write-delimited #\Space tok)
