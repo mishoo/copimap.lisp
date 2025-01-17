@@ -15,7 +15,7 @@
 
 (defgeneric store-get-last-uid (store))
 (defgeneric store-save-mailbox (store mailbox))
-(defgeneric store-save-messages (store messages))
+(defgeneric store-save-messages (store imap messages))
 (defgeneric store-save-flags (store flags))
 (defgeneric store-save-labels (store labels))
 (defgeneric store-close (store))
@@ -85,9 +85,36 @@
               (machine-instance)
               uid))))
 
-(defmethod store-save-messages ((store maildir-store) messages)
+(defun %fix-strings (conn list)
+  (mapcar (lambda (x)
+            (as-string (destr conn x)))
+          list))
+
+(defun %add-x-keywords (body keywords)
+  (cond
+    (keywords
+     (let (headers bodypos)
+       (with-input-from-string (in body)
+         (setf headers (parse-rfc822-headers in)
+               bodypos (file-position in)))
+       (let ((kwhead (assoc "X-Keywords" headers :test #'equalp))
+             (kwvalue (format nil "~{~A~^, ~}"
+                              (mapcar #'encode-header keywords))))
+         (cond
+           (kwhead
+            (setf (cdr kwhead) kwvalue))
+           (t
+            (setf (cdr (last headers))
+                  (list (cons "X-Keywords" kwvalue))))))
+       (with-output-to-string (out)
+         (write-rfc822-headers headers out)
+         (write-string (subseq body bodypos) out))))
+    (t
+     body)))
+
+(defmethod store-save-messages ((store maildir-store) (conn imap) messages)
   (loop with db = (store-db store)
-        with insert-message = (dbi:prepare db "INSERT INTO message (uid, path, internaldate, mtime) VALUES (?, ?, ?, ?)")
+        with insert-message = (dbi:prepare db "INSERT INTO message (uid, local_uid, path, internaldate, mtime) VALUES (?, ?, ?, ?, ?)")
         with add-flags = (dbi:prepare db "INSERT INTO map_flag_message (flag, message) VALUES (?, ?)")
         with add-labels = (dbi:prepare db "INSERT INTO map_label_message (label, message) VALUES (?, ?)")
         with mtime
@@ -97,7 +124,9 @@
                                   (ts (when date (parse-internaldate date))))
                              (when ts (local-time:timestamp-to-unix ts)))
         for flags = (getf msg '$FLAGS)
+        for str-flags = (%fix-strings conn flags)
         for labels = (getf msg '$X-GM-LABELS)
+        for str-labels = (%fix-strings conn labels)
         for seen = (find '$\\Seen flags)
         for envelope = (getf msg '$ENVELOPE)
         for body = (getf msg '$BODY[])
@@ -110,7 +139,10 @@
                  (with-open-file (out tmpname :direction :output
                                               :if-exists :supersede
                                               :if-does-not-exist :create)
-                   (write-string body out))
+                   (write-string (if labels
+                                     (%add-x-keywords body str-labels)
+                                     body)
+                                 out))
                  (let ((newname (fad:merge-pathnames-as-file
                                  (if seen
                                      (store-folder store "cur/")
@@ -126,10 +158,10 @@
                                      filename))))
                    (rename-file tmpname newname)
                    (setf mtime (file-attributes:modification-time newname)))
-                 (store-save-flags store flags) ; XXX: probably pointless..
-                 (store-save-labels store labels)
-                 (dbi:execute insert-message (list uid filename internaldate mtime))
-                 (loop for flag in flags
-                       do (dbi:execute add-flags (list (as-string flag) uid)))
-                 (loop for label in labels
-                       do (dbi:execute add-labels (list (as-string label) uid)))))))
+                 (store-save-flags store str-flags) ; XXX: probably pointless..
+                 (store-save-labels store str-labels)
+                 (dbi:execute insert-message (list uid uid filename internaldate mtime))
+                 (loop for flag in str-flags
+                       do (dbi:execute add-flags (list flag uid)))
+                 (loop for label in str-labels
+                       do (dbi:execute add-labels (list label uid)))))))

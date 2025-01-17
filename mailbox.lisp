@@ -16,7 +16,7 @@
 (defclass imap+mailbox (imap mailbox)
   ((local-store :initarg :local-store :accessor mailbox-local-store)))
 
-(defgeneric mailbox-fetch (mailbox uids))
+(defgeneric mailbox-fetch (mailbox uids &optional handler))
 
 (defmacro with-local-store (conn &body body)
   `(with-slots ((store local-store)) ,conn
@@ -67,7 +67,7 @@
   (with-local-store conn
     (store-save-messages store conn (list (cadr arg)))))
 
-(defmethod mailbox-fetch ((conn imap+mailbox) uids)
+(defmethod mailbox-fetch ((conn imap+mailbox) uids &optional handler)
   (imap-command conn
                 `(UID FETCH ,uids
                       (UID
@@ -76,4 +76,5 @@
                        FLAGS
                        ,@(when (imap-has-capability conn :X-GM-EXT-1)
                            '(X-GM-LABELS))
-                       (:BODY.PEEK)))))
+                       (:BODY.PEEK)))
+                handler))

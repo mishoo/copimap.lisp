@@ -57,9 +57,14 @@
 
         ((char= #\" ch)
          (with-output-to-string (out)
-           (loop for ch = (read-char input)
-                 until (char= ch #\")
-                 do (write-char ch out))))
+           (loop for ch = (read-char input) do
+             (cond
+               ((char= #\\ ch)
+                (write-char (read-char input) out))
+               ((char= #\" ch)
+                (return))
+               (t
+                (write-char ch out))))))
 
         ((char= #\{ ch)
          (let ((len (%read-token input t)))
