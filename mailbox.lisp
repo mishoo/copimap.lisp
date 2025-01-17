@@ -16,9 +16,12 @@
 (defclass imap+mailbox (imap mailbox)
   ((local-store :initarg :local-store :accessor mailbox-local-store)))
 
+(defgeneric mailbox-fetch (mailbox uids))
+
 (defmacro with-local-store (conn &body body)
   `(with-slots ((store local-store)) ,conn
-     ,@body))
+     (when store
+       ,@body)))
 
 (defmethod mailbox-local-store-directory ((conn imap+mailbox))
   (format nil "~~/Imapsync/~A/~A/~A/"
@@ -62,4 +65,15 @@
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$FETCH)) arg)
   (with-local-store conn
-    (when store (store-save-messages store (list (cadr arg))))))
+    (store-save-messages store conn (list (cadr arg)))))
+
+(defmethod mailbox-fetch ((conn imap+mailbox) uids)
+  (imap-command conn
+                `(UID FETCH ,uids
+                      (UID
+                       INTERNALDATE
+                       ENVELOPE
+                       FLAGS
+                       ,@(when (imap-has-capability conn :X-GM-EXT-1)
+                           '(X-GM-LABELS))
+                       (:BODY.PEEK)))))

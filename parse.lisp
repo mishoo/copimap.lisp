@@ -96,6 +96,8 @@
          (let ((atom (%read-atom nil)))
            (when reqid
              (return-from %read-token atom))
+           (when (string-equal atom "NIL")
+             (return-from %read-token nil))
            (setf atom
                  (block nil
                    (rx:register-groups-bind (a colon b) ("^(\\d+)(:)?(\\d+)?$" atom)
