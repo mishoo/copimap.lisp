@@ -197,8 +197,33 @@
 
 (defun parse-rfc822-headers (input)
   (labels
-      ((continued ()
-         (let ((ch (peek-char nil input)))
+      ((peek (&optional eof-error)
+         (let ((ch (peek-char nil input eof-error)))
+           (cond
+             ((null ch) nil)
+             ((char= #\Return ch)
+              (read-char input)
+              (prog1
+                  (if (eql #\Newline (peek-char nil input eof-error))
+                      #\Newline
+                      #\Return)
+                (unread-char ch input)))
+             (t ch))))
+
+       (next (&optional eof-error)
+         (let ((ch (read-char input eof-error)))
+           (cond
+             ((null ch) nil)
+             ((char= #\Return ch)
+              (if (eql #\Newline (setf ch (read-char input)))
+                  #\Newline
+                  (prog1
+                      #\Return
+                    (unread-char ch input))))
+             (t ch))))
+
+       (continued ()
+         (let ((ch (peek)))
            (or (char= #\Space ch)
                (char= #\Tab ch))))
 
@@ -207,7 +232,7 @@
 
        (read-value ()
          (with-output-to-string (out)
-           (loop for ch = (read-char input) do
+           (loop for ch = (next) do
              (cond
                ((and (char= #\Newline ch)
                      (continued))
@@ -224,9 +249,9 @@
                  (%skip-more-whitespace input)
                  (read-value)))))
 
-    (loop until (char= #\Newline (peek-char nil input))
+    (loop until (char= #\Newline (peek))
           collect (read-header)
-          finally (read-char input))))
+          finally (next))))
 
 (defun decode-header (string)
   (with-output-to-string (out)
@@ -293,9 +318,11 @@
                      (write-char ch out)))))))))
 
 (defun encode-header (str)
-  (format nil "=?utf-8?b?~A?="
-          (cl-base64:usb8-array-to-base64-string
-           (trivial-utf-8:string-to-utf-8-bytes str))))
+  (let ((bytes (trivial-utf-8:string-to-utf-8-bytes str)))
+    (if (/= (length bytes) (length str))
+        (format nil "=?utf-8?b?~A?="
+                (cl-base64:usb8-array-to-base64-string bytes))
+        str)))
 
 (defun write-rfc822-headers (headers &optional (output t))
   (loop with crlf = #.(coerce #(#\Return #\Newline) 'string)
