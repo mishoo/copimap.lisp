@@ -14,7 +14,8 @@
    (highestmodseq :initform 0 :initarg :highestmodseq :accessor mailbox-highestmodseq)))
 
 (defclass imap+mailbox (imap mailbox)
-  ((local-store :initarg :local-store :accessor mailbox-local-store)))
+  ((local-store :initarg :local-store :accessor mailbox-local-store)
+   (gmail :initform nil :accessor mailbox-gmail)))
 
 (defgeneric mailbox-fetch (mailbox uids &optional handler))
 
@@ -36,10 +37,13 @@
                          :path (mailbox-local-store-directory conn)))))
 
 (defmethod imap-on-connect ((conn imap+mailbox))
-  (imap-command-sync conn `(:select (:astr ,(mailbox-name conn)))
-                     (lambda (arg)
-                       (when-ok arg
-                         (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))))))
+  (when (imap-has-capability conn :X-GM-EXT-1)
+    (setf (mailbox-gmail conn) t)
+    (imap-command conn '(enable :X-GM-EXT-1)))
+  (imap-command conn `(:select (:astr ,(mailbox-name conn)))
+                (lambda (arg)
+                  (when-ok arg
+                    (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$OK)) arg)
   (when (listp (car arg))
@@ -59,8 +63,7 @@
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$EXISTS)) arg)
   (setf (mailbox-exists conn) (car arg))
-  (with-idle-resume conn
-    (mailbox-fetch-new conn)))
+  (mailbox-fetch-new conn))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$RECENT)) arg)
   (setf (mailbox-recent conn) (car arg)))
@@ -70,29 +73,30 @@
     (store-save-messages store conn (list (cadr arg)))))
 
 (defmethod mailbox-fetch ((conn imap+mailbox) uids &optional handler)
-  (imap-command conn
-                `(UID FETCH ,uids
-                      (UID
-                       INTERNALDATE
-                       ENVELOPE
-                       FLAGS
-                       ,@(when (imap-has-capability conn :X-GM-EXT-1)
-                           '(X-GM-LABELS))
-                       (:BODY.PEEK)))
-                handler))
+  (with-idle-resume conn
+    (imap-command conn
+                  `(UID FETCH ,uids
+                        (UID
+                         INTERNALDATE
+                         ENVELOPE
+                         FLAGS
+                         ,@(when (mailbox-gmail conn) '(X-GM-LABELS))
+                         (:BODY.PEEK)))
+                  handler)))
 
 (defmethod mailbox-fetch-new ((conn imap+mailbox) &optional handler)
   (with-local-store conn
     (let ((uid (or (store-get-last-uid store) 0)))
-      (imap-command-sync conn `(uid search return (min max count) (:range ,(1+ uid) :*))
-                         (lambda (arg ret)
-                           (when-ok arg
-                             (v:debug :esearch "~S~%" ret)
-                             (let ((max (getf (cdr ret) '$MAX 0))
-                                   (count (getf (cdr ret) '$COUNT 0)))
-                               (cond
-                                 ((< uid max)
-                                  (v:info :sync "Fetching ~D new messages" count)
-                                  (mailbox-fetch conn `(:range ,(1+ uid) :*) handler))
-                                 (t
-                                  (v:info :sync "No new messages"))))))))))
+      (with-idle-resume conn
+        (imap-command conn `(uid search return (min max count) (:range ,(1+ uid) :*))
+                      (lambda (arg ret)
+                        (when-ok arg
+                          (v:debug :esearch "~S" ret)
+                          (let ((max (getf (cdr ret) '$MAX 0))
+                                (count (getf (cdr ret) '$COUNT 0)))
+                            (cond
+                              ((< uid max)
+                               (v:info :sync "Fetching ~D new messages" count)
+                               (mailbox-fetch conn `(:range ,(1+ uid) :*) handler))
+                              (t
+                               (v:info :sync "No new messages")))))))))))

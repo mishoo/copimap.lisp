@@ -74,16 +74,21 @@
 
 (defgeneric maildir-message-filename (store uid))
 
-(let ((prev-time 0) (id 0))
-  (defmethod maildir-message-filename ((store maildir-store) uid)
-    (let* ((time (get-universal-time))
-           (prefix (if (= time prev-time)
-                       (format nil "~D_~D" time (incf id))
-                       (format nil "~D" (setf id 0 prev-time time)))))
-      (format nil "imapsync.~A.~A,U=~D."
-              prefix
-              (machine-instance)
-              uid))))
+#+nil (let ((prev-time 0) (id 0))
+        (defmethod maildir-message-filename ((store maildir-store) uid)
+          (let* ((time (get-universal-time))
+                 (prefix (if (= time prev-time)
+                             (format nil "~D_~D" time (incf id))
+                             (format nil "~D" (setf id 0 prev-time time)))))
+            (format nil "imapsync.~A.~A,U=~D."
+                    prefix
+                    (machine-instance)
+                    uid))))
+
+(defmethod maildir-message-filename ((store maildir-store) uid)
+  (format nil "imapsync.~A,U=~D."
+          (machine-instance)
+          uid))
 
 (defun %fix-strings (conn list)
   (mapcar (lambda (x)
