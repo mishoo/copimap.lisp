@@ -10,13 +10,15 @@
   (uiop:native-namestring
    (fad:merge-pathnames-as-file (store-path store) ".imapsync.sqlite3")))
 
-(defun store-folder (store folder)
-  (fad:merge-pathnames-as-directory (store-path store) folder))
+(defun store-folder (store &optional folder)
+  (uiop:native-namestring
+   (if folder
+       (fad:merge-pathnames-as-directory (store-path store) folder)
+       (store-path store))))
 
 (defgeneric store-get-last-uid (store))
 (defgeneric store-save-mailbox (store mailbox))
 (defgeneric store-save-messages (store imap messages))
-(defgeneric store-close (store))
 (defgeneric store-get-by-uid (store uid))
 
 (defmethod initialize-instance :after ((store store) &key &allow-other-keys)
@@ -45,9 +47,6 @@
 (defmethod store-get-by-uid ((store store) uid)
   (sql-row (store-db store) "SELECT * FROM message WHERE uid = ?" uid))
 
-(defmethod store-close ((store store))
-  (dbi:disconnect (store-db store)))
-
 ;;;;;;;;;;;;;;;;
 
 (defclass maildir-store (store)
@@ -58,23 +57,55 @@
   (ensure-directories-exist (store-folder store "cur/"))
   (ensure-directories-exist (store-folder store "tmp/")))
 
-(defgeneric maildir-message-filename (store uid))
+(defgeneric maildir-make-filename (store uid envelope))
+(defgeneric maildir-find-message-file (store uid))
 
-#+nil (let ((prev-time 0) (id 0))
-        (defmethod maildir-message-filename ((store maildir-store) uid)
-          (let* ((time (get-universal-time))
-                 (prefix (if (= time prev-time)
-                             (format nil "~D_~D" time (incf id))
-                             (format nil "~D" (setf id 0 prev-time time)))))
-            (format nil "imapsync.~A.~A,U=~D."
-                    prefix
-                    (machine-instance)
-                    uid))))
+(let ((prev-time 0) (id 0))
+  (defun make-maildir-filename (uid)
+    (let* ((time (get-universal-time))
+           (prefix (if (= time prev-time)
+                       (format nil "~D_~D" time (incf id))
+                       (format nil "~D" (setf id 0 prev-time time)))))
+      (format nil "imapsync.U=~D.~A.~A"
+              uid
+              prefix
+              (machine-instance)))))
 
-(defmethod maildir-message-filename ((store maildir-store) uid)
-  (format nil "imapsync.~A,U=~D."
-          (machine-instance)
-          uid))
+(defun envelope-message-id (envelope)
+  (destructuring-bind (date subject from sender reply-to to cc bcc in-reply-to message-id)
+      envelope
+    (declare (ignore date subject from sender reply-to to cc bcc in-reply-to))
+    message-id))
+
+(defmethod maildir-make-filename ((store maildir-store) uid envelope)
+  (or (when envelope
+        (envelope-message-id envelope))
+      (make-maildir-filename uid)))
+
+(defmethod maildir-find-message-file ((store maildir-store) uid)
+  "Return the current filename for the given `store' and `uid' (it could
+have moved from new/ to cur/, or it could have various flags
+appended)."
+  ;; XXX: this is ugly (runs external "find" program), but much faster
+  ;; than using `directory', since maildirs could have tens of
+  ;; thousands of files. Running `directory' on my Gmail folder takes
+  ;; 2 seconds and conses a list of 40k names (there seems to be no
+  ;; standard way to use a wildcard for part of the filename).
+  ;;
+  ;; Should check `iolib/os:walk-directory'.
+  (let ((msg (store-get-by-uid store uid)))
+    (when msg
+      (let ((filename
+              (rx:regex-replace
+               "\\s+$"
+               (with-output-to-string (out)
+                 (uiop:run-program
+                  `("find" ,(store-folder store)
+                           "-type" "f"
+                           "-name" ,(format nil "~A*" (getf msg :|path|)))
+                  :output out))
+               "")))
+        (if (string= filename "") nil filename)))))
 
 (defun %fix-strings (conn list)
   (mapcar (lambda (x)
@@ -105,7 +136,7 @@
 
 (defmethod store-save-messages ((store maildir-store) (conn imap) messages)
   (loop with db = (store-db store)
-        with insert-message = (dbi:prepare db "INSERT INTO message (uid, local_uid, path, internaldate, mtime) VALUES (?, ?, ?, ?, ?)")
+        with insert-message = (dbi:prepare db "INSERT INTO message (uid, local_uid, path, internaldate, message_id, mtime) VALUES (?, ?, ?, ?, ?, ?)")
         with add-flags = (dbi:prepare db "INSERT INTO map_flag_message (flag, message) VALUES (?, ?)")
         with add-labels = (dbi:prepare db "INSERT INTO map_label_message (label, message) VALUES (?, ?)")
         with mtime
@@ -120,8 +151,9 @@
         for str-labels = (%fix-strings conn labels)
         for seen = (find '$\\Seen flags)
         for envelope = (getf msg '$ENVELOPE)
+        for message-id = (when envelope (envelope-message-id envelope))
         for body = (getf msg '$BODY[])
-        for filename = (maildir-message-filename store uid)
+        for filename = (maildir-make-filename store uid envelope)
         for tmpname = (fad:merge-pathnames-as-file (store-folder store "tmp/") filename)
         when (and uid body)
           do (dbi:with-transaction db
@@ -149,7 +181,7 @@
                                      filename))))
                    (rename-file tmpname newname)
                    (setf mtime (file-attributes:modification-time newname)))
-                 (dbi:execute insert-message (list uid uid filename internaldate mtime))
+                 (dbi:execute insert-message (list uid uid filename internaldate message-id mtime))
                  (loop for flag in str-flags
                        do (dbi:execute add-flags (list flag uid)))
                  (loop for label in str-labels

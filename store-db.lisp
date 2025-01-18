@@ -53,9 +53,12 @@
       local_uid UNSIGNED INTEGER UNIQUE,
       path VARCHAR(255),
       internaldate INTEGER,
+      message_id VARCHAR(255),
       mtime UNSIGNED INTEGER)"
 
    "CREATE INDEX idx_message_mtime ON message(mtime)"
+
+   "CREATE INDEX idx_message_message_id ON message(message_id)"
 
    "CREATE TABLE map_flag_message (
       flag VARCHAR(255),

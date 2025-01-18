@@ -213,7 +213,7 @@ you're doing."
     (imap-command imap '(:uid :fetch 1 (flags envelope (:binary.peek 1))))
 
 Symbols will be sent as IMAP atoms; they don't have to be keywords,
-but some keywords are treated specially at the start of a list:
+but some keywords are treated specially:
 
     (:range 1 5) -> 1:5
     (:range 10 :*) -> 10:*
@@ -239,7 +239,7 @@ commands; examples:
 Peculiarities of the protocol require us to write these arguments one
 by one, rather than assemble a full command in a string and write it
 at once. For example, some data may be binary (e.g. if you pass
-a (vector (unsigned-byte 8))), and they require writing to the binary
+a (vector (unsigned-byte 8))), and this requires writing to the binary
 stream. Or, depending on server capability (or lack thereof) we might
 need to send synchronizing literals
 (https://www.rfc-editor.org/rfc/rfc9051#name-string) which requires us
@@ -248,17 +248,20 @@ held until we encode the whole command and force output.
 
 If you pass `handler', it must be a function of at least one argument,
 but more can be sent for specific commands (e.g. SEARCH), so your
-handler should be prepared to accept more than one argument. The
-handler will be called from the read loop thread when the server sends
-us a tagged response which includes the current request ID. The
-argument will be a list where the first item will be $OK (symbol OK in
-the `+atoms-package+') if the command was successful.
+handler should be prepared to accept (but not require) more than one
+argument. The handler will be called from the read loop thread when
+the server sends us a tagged response which includes the current
+request ID. The argument will be a list where the first item will be
+`$OK' (symbol OK in the `+atoms-package+') if the command was
+successful.
 
 Various data requested by your command may come before your handler is
 called, via untagged notifications, for which the read loop will
 invoke `imap-handle'."
   (with-sock-lock conn
-    (v:debug :send "~S" cmd)
+    (v:debug :send "~S" (if (eq :login (car cmd))
+                            '(:login |...|)
+                            cmd))
     (labels
         ((write-delimited (sep list)
            (loop for first = t then nil
@@ -407,8 +410,7 @@ tagged responses it invokes the associated handler from
 The command line, as returned by `parse-imap-cmdline', is a list of
 tokens (similar to the ones that you send to `imap-command'). The
 first is `:untagged' for notifications or `:continue' for continuation
-requests, otherwise it's a request ID followed by data returned for
-that request.
+requests, otherwise it's a request ID followed by return value.
 
 IMAP atoms are similar to Lisp symbols, so they are parsed as such,
 and interned into `+atoms-package+' (IMAPSYNC-ATOMS). Note that the
@@ -542,19 +544,17 @@ loop thread is started. Returns `T' on success."
 (defmethod imap-read-loop ((conn imap))
   (v:debug :imap "Starting read loop (~A)" (imap-host conn))
   (imap-on-connect conn)
-  (loop with sock = (imap-sock conn)
-        with stream = (imap-text-stream conn)
-        for poll-time = (imap-poll-time conn)
+  (loop for poll-time = (imap-poll-time conn)
         while (imap-running conn)
         when (and poll-time
                   (<= poll-time (- (get-universal-time)
                                    (imap-last-command-time conn))))
           do (with-idle-resume conn
                (imap-command conn "NOOP"))
-        do (sock:wait-for-input sock :timeout 1)
+        do (sock:wait-for-input (imap-sock conn) :timeout 1)
            (with-sock-lock conn
              (loop while (and (imap-running conn)
-                              (listen stream))
+                              (listen (imap-text-stream conn)))
                    do (imap-parse conn))))
   (v:debug :imap "Loop terminated (~A)" (imap-host conn)))
 
