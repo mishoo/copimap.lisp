@@ -307,7 +307,9 @@ invoke `imap-handle'."
                  (write-delimited #\. (cdr tok))
                  (write-char #\] stream))
                 (:astr
-                 (write-tok (enstr conn (cadr tok))))
+                 (write-delimited #\Space
+                                  (mapcar (lambda (x) (enstr conn x))
+                                          (cdr tok))))
                 (t
                  (write-char #\( stream)
                  (write-delimited #\Space tok)

@@ -58,7 +58,9 @@
     (store-save-flags (mailbox-local-store conn) (car arg))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$EXISTS)) arg)
-  (setf (mailbox-exists conn) (car arg)))
+  (setf (mailbox-exists conn) (car arg))
+  (with-idle-resume conn
+    (mailbox-fetch-new conn)))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$RECENT)) arg)
   (setf (mailbox-recent conn) (car arg)))
@@ -78,3 +80,19 @@
                            '(X-GM-LABELS))
                        (:BODY.PEEK)))
                 handler))
+
+(defmethod mailbox-fetch-new ((conn imap+mailbox) &optional handler)
+  (with-local-store conn
+    (let ((uid (or (store-get-last-uid store) 0)))
+      (imap-command-sync conn `(uid search return (min max count) (:range ,(1+ uid) :*))
+                         (lambda (arg ret)
+                           (when-ok arg
+                             (v:debug :esearch "~S~%" ret)
+                             (let ((max (getf (cdr ret) '$MAX 0))
+                                   (count (getf (cdr ret) '$COUNT 0)))
+                               (cond
+                                 ((< uid max)
+                                  (v:info :sync "Fetching ~D new messages" count)
+                                  (mailbox-fetch conn `(:range ,(1+ uid) :*) handler))
+                                 (t
+                                  (v:info :sync "No new messages"))))))))))
