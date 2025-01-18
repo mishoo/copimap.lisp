@@ -34,6 +34,10 @@
        ON CONFLICT(key) DO UPDATE SET intval = ?"
       (list version version))))
 
+(defmethod store-upgrade-db ((store store) version)
+  (v:debug :store "Store DB up-to-date (version ~A)" version)
+  t)
+
 (defmethod store-upgrade-db ((store store) (version (eql 0)))
   (v:debug :store "New database ~A" (store-db-filename store))
   (sql-do-all
@@ -41,7 +45,8 @@
    "CREATE TABLE mailbox (
       key VARCHAR(255) NOT NULL PRIMARY KEY,
       intval INTEGER,
-      txtval TEXT)"
+      txtval TEXT,
+      binval BLOB)"
 
    "CREATE TABLE message (
       uid UNSIGNED INTEGER PRIMARY KEY,
@@ -52,24 +57,18 @@
 
    "CREATE INDEX idx_message_mtime ON message(mtime)"
 
-   "CREATE TABLE flag (name VARCHAR(255) PRIMARY KEY)"
-
-   "CREATE TABLE label (name VARCHAR(255) PRIMARY KEY)"
-
    "CREATE TABLE map_flag_message (
       flag VARCHAR(255),
       message UNSIGNED INTEGER,
       PRIMARY KEY (flag, message),
-      FOREIGN KEY (flag) REFERENCES flag(name) ON DELETE CASCADE ON UPDATE CASCADE,
       FOREIGN KEY (message) REFERENCES message(uid) ON DELETE CASCADE ON UPDATE CASCADE)"
+
+   "CREATE INDEX idx_map_flag_message_flag ON map_flag_message(flag)"
 
    "CREATE TABLE map_label_message (
       label VARCHAR(255),
       message UNSIGNED INTEGER,
       PRIMARY KEY (label, message),
-      FOREIGN KEY (label) REFERENCES label(name) ON DELETE CASCADE ON UPDATE CASCADE,
-      FOREIGN KEY (message) REFERENCES message(uid) ON DELETE CASCADE ON UPDATE CASCADE)"))
+      FOREIGN KEY (message) REFERENCES message(uid) ON DELETE CASCADE ON UPDATE CASCADE)"
 
-(defmethod store-upgrade-db ((store store) version)
-  (v:debug :store "Store DB up-to-date (version ~A)" version)
-  t)
+   "CREATE INDEX idx_map_label_message_label ON map_label_message(label)"))

@@ -16,8 +16,6 @@
 (defgeneric store-get-last-uid (store))
 (defgeneric store-save-mailbox (store mailbox))
 (defgeneric store-save-messages (store imap messages))
-(defgeneric store-save-flags (store flags))
-(defgeneric store-save-labels (store labels))
 (defgeneric store-close (store))
 (defgeneric store-get-by-uid (store uid))
 
@@ -39,18 +37,6 @@
         for key in '(exists recent unseen uidvalidity uidnext highestmodseq)
         for val = (slot-value mailbox key)
         do (dbi:execute query (list (symbol-name key) val))))
-
-(defmethod store-save-flags ((store store) flags)
-  (let ((sql (dbi:prepare (store-db store)
-                 "INSERT INTO flag (name) VALUES (?) ON CONFLICT DO NOTHING")))
-    (loop for name in flags do
-      (dbi:execute sql (list (as-string name))))))
-
-(defmethod store-save-labels ((store store) labels)
-  (let ((sql (dbi:prepare (store-db store)
-                 "INSERT INTO label (name) VALUES (?) ON CONFLICT DO NOTHING")))
-    (loop for name in labels do
-      (dbi:execute sql (list (as-string name))))))
 
 (defmethod store-get-last-uid ((store store))
   (sql-single (store-db store)
@@ -163,8 +149,6 @@
                                      filename))))
                    (rename-file tmpname newname)
                    (setf mtime (file-attributes:modification-time newname)))
-                 (store-save-flags store str-flags) ; XXX: probably pointless..
-                 (store-save-labels store str-labels)
                  (dbi:execute insert-message (list uid uid filename internaldate mtime))
                  (loop for flag in str-flags
                        do (dbi:execute add-flags (list flag uid)))
