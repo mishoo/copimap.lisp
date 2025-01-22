@@ -4,7 +4,12 @@
 
 (defclass store ()
   ((path :initarg :path :accessor store-path)
-   (db :accessor store-db)))
+   (db :accessor store-db)
+   (q-insert-message :accessor q-insert-message)
+   (q-add-flags :accessor q-add-flags)
+   (q-del-flags :accessor q-del-flags)
+   (q-add-labels :accessor q-add-labels)
+   (q-del-labels :accessor q-del-labels)))
 
 (defun store-db-filename (store)
   (uiop:native-namestring
@@ -19,7 +24,9 @@
 (defgeneric store-get-last-uid (store))
 (defgeneric store-save-mailbox (store mailbox))
 (defgeneric store-save-messages (store imap messages))
+(defgeneric store-find-local-changes (store))
 (defgeneric store-get-by-uid (store uid))
+(defgeneric store-get-by-path (store path))
 
 (defmethod initialize-instance :after ((store store) &key &allow-other-keys)
   (with-slots (path db) store
@@ -30,7 +37,17 @@
         (with-open-file (out db-file :if-does-not-exist :create)))
       (setf db (dbi:connect :sqlite3 :database-name db-file))
       (dbi:do-sql db "PRAGMA foreign_keys = ON")
-      (store-upgrade-db store nil))))
+      (store-upgrade-db store nil)
+      (setf (q-insert-message store)
+            (dbi:prepare db "INSERT INTO message (uid, local_uid, path, internaldate, message_id, mtime) VALUES (?, ?, ?, ?, ?, ?)"))
+      (setf (q-add-flags store)
+            (dbi:prepare db "INSERT INTO map_flag_message (flag, message) VALUES (?, ?)"))
+      (setf (q-del-flags store)
+            (dbi:prepare db "DELETE FROM map_flag_message WHERE message = ?"))
+      (setf (q-add-labels store)
+            (dbi:prepare db "INSERT INTO map_label_message (label, message) VALUES (?, ?)"))
+      (setf (q-del-labels store)
+            (dbi:prepare db "DELETE FROM map_label_message WHERE message = ?")))))
 
 (defmethod store-save-mailbox ((store store) (mailbox mailbox))
   (loop with db = (store-db store)
@@ -40,12 +57,40 @@
         for val = (slot-value mailbox key)
         do (dbi:execute query (list (symbol-name key) val))))
 
+(defmethod store-insert-message ((store store)
+                                 &key
+                                   uid
+                                   (local-uid uid)
+                                   path
+                                   internaldate
+                                   message-id
+                                   mtime
+                                   flags
+                                   labels)
+  (dbi:execute (q-insert-message store)
+               (list uid local-uid path internaldate message-id mtime))
+  (store-set-flags store uid flags)
+  (store-set-labels store uid labels))
+
+(defmethod store-set-flags ((store store) uid flags)
+  (dbi:execute (q-del-flags store) (list uid))
+  (loop for flag in flags
+        do (dbi:execute (q-add-flags store) (list flag uid))))
+
+(defmethod store-set-labels ((store store) uid labels)
+  (dbi:execute (q-del-labels store) (list uid))
+  (loop for label in labels
+        do (dbi:execute (q-add-labels store) (list label uid))))
+
 (defmethod store-get-last-uid ((store store))
   (sql-single (store-db store)
               "SELECT uid FROM message ORDER BY uid DESC LIMIT 1"))
 
 (defmethod store-get-by-uid ((store store) uid)
   (sql-row (store-db store) "SELECT * FROM message WHERE uid = ?" uid))
+
+(defmethod store-get-by-path ((store store) path)
+  (sql-row (store-db store) "SELECT * FROM message WHERE path = ?" path))
 
 ;;;;;;;;;;;;;;;;
 
@@ -78,9 +123,7 @@
     message-id))
 
 (defmethod maildir-make-filename ((store maildir-store) uid envelope)
-  (or (when envelope
-        (envelope-message-id envelope))
-      (make-maildir-filename uid)))
+  (make-maildir-filename uid))
 
 (defmethod maildir-find-message-file ((store maildir-store) uid)
   "Return the current filename for the given `store' and `uid' (it could
@@ -136,9 +179,9 @@ appended)."
 
 (defmethod store-save-messages ((store maildir-store) (conn imap) messages)
   (loop with db = (store-db store)
-        with insert-message = (dbi:prepare db "INSERT INTO message (uid, local_uid, path, internaldate, message_id, mtime) VALUES (?, ?, ?, ?, ?, ?)")
-        with add-flags = (dbi:prepare db "INSERT INTO map_flag_message (flag, message) VALUES (?, ?)")
-        with add-labels = (dbi:prepare db "INSERT INTO map_label_message (label, message) VALUES (?, ?)")
+        with insert-message = (q-insert-message store)
+        with add-flags = (q-add-flags store)
+        with add-labels = (q-add-labels store)
         with mtime
         for msg in messages
         for uid = (getf msg '$UID)
@@ -155,34 +198,129 @@ appended)."
         for body = (getf msg '$BODY[])
         for filename = (maildir-make-filename store uid envelope)
         for tmpname = (fad:merge-pathnames-as-file (store-folder store "tmp/") filename)
-        when (and uid body)
-          do (dbi:with-transaction db
-               (unless (store-get-by-uid store uid)
-                 (v:debug :store "Saving message ~D ~A ~A" uid flags filename)
-                 (with-open-file (out tmpname :direction :output
-                                              :if-exists :supersede
-                                              :if-does-not-exist :create)
-                   (write-string (if labels
-                                     (%add-x-keywords body str-labels)
-                                     body)
-                                 out))
-                 (let ((newname (fad:merge-pathnames-as-file
-                                 (if seen
-                                     (store-folder store "cur/")
-                                     (store-folder store "new/"))
-                                 (if seen
-                                     (with-output-to-string (out)
-                                       (format out "~A:2," filename)
-                                       (when (find '$\\Draft flags) (write-char #\D out))
-                                       (when (find '$\\Flagged flags) (write-char #\F out))
-                                       (when (find '$\\Answered flags) (write-char #\R out))
-                                       (when seen (write-char #\S out))
-                                       (when (find '$\\Deleted flags) (write-char #\T out)))
-                                     filename))))
-                   (rename-file tmpname newname)
-                   (setf mtime (file-attributes:modification-time newname)))
-                 (dbi:execute insert-message (list uid uid filename internaldate message-id mtime))
-                 (loop for flag in str-flags
-                       do (dbi:execute add-flags (list flag uid)))
-                 (loop for label in str-labels
-                       do (dbi:execute add-labels (list label uid)))))))
+        do (dbi:with-transaction db
+             (cond
+               ((store-get-by-uid store uid)
+                (store-set-flags store uid str-flags)
+                (store-set-labels store uid str-labels))
+               (body
+                (v:debug :store "Saving message ~D ~A ~A" uid flags filename)
+                (with-open-file (out tmpname :direction :output
+                                             :if-exists :supersede
+                                             :if-does-not-exist :create
+                                             :external-format :iso-8859-1)
+                  (write-string (if labels
+                                    (%add-x-keywords body str-labels)
+                                    body)
+                                out))
+                (let ((newname (fad:merge-pathnames-as-file
+                                (if seen
+                                    (store-folder store "cur/")
+                                    (store-folder store "new/"))
+                                (if seen
+                                    (with-output-to-string (out)
+                                      (format out "~A:2," filename)
+                                      (when (find '$\\Draft flags) (write-char #\D out))
+                                      (when (find '$\\Flagged flags) (write-char #\F out))
+                                      (when (find '$$Forwarded flags) (write-char #\P out))
+                                      (when (find '$\\Answered flags) (write-char #\R out))
+                                      (when seen (write-char #\S out))
+                                      (when (find '$\\Deleted flags) (write-char #\T out)))
+                                    filename))))
+                  (rename-file tmpname newname)
+                  (setf mtime (file-attributes:modification-time newname)))
+                (store-insert-message store :uid uid
+                                            :path filename
+                                            :internaldate internaldate
+                                            :message-id message-id
+                                            :mtime mtime
+                                            :flags str-flags
+                                            :labels str-labels))))))
+
+(defun maildir-flags-from-file (strflags)
+  (loop for ch across strflags
+        for f = (assoc ch '((#\S . $\\Seen)
+                            (#\R . $\\Answered)
+                            (#\F . $\\Flagged)
+                            (#\T . $\\Deleted)
+                            (#\D . $\\Draft)
+                            (#\P . $$Forwarded))
+                       :test #'eql)
+        when f collect (cdr f)))
+
+(defmacro for-maildir-files ((dir &optional
+                                    (filename 'filename)
+                                    (fullname 'fullname)
+                                    (mtime 'mtime)
+                                    (path 'path)
+                                    (flags 'flags))
+                             &body body)
+  (a:once-only (dir)
+    (a:with-gensyms (process in)
+      `(let* ((,process (uiop:launch-program `("ls" "--sort" "t" ,,dir)
+                                             :output :stream))
+              (,in (uiop:process-info-output ,process)))
+         (loop with ,flags
+               for ,filename = (read-line ,in nil)
+               while ,filename
+               for ,fullname = (fad:merge-pathnames-as-file ,dir ,filename)
+               for ,mtime = (file-attributes:modification-time ,fullname)
+               for ,path = (rx:register-groups-bind (mpath mflags)
+                               ("^(.*?)(?::2,([^:]*))?$" ,filename)
+                             (when mflags
+                               (setf ,flags (maildir-flags-from-file mflags)))
+                             mpath)
+               ,@body
+               finally (uiop:close-streams ,process)
+                       (uiop:terminate-process ,process))))))
+
+(defun maildir-find-changed-files (store dir)
+  (setf dir (store-folder store dir))
+  (for-maildir-files (dir filename fullname mtime path flags)
+    for msg = (when path (store-get-by-path store path))
+    until (and msg (eql mtime (getf msg :|mtime|)))
+    collect (list msg fullname flags mtime)))
+
+(defmethod store-find-local-changes ((store maildir-store))
+  (loop for (msg fullname flags mtime) in `(,@(maildir-find-changed-files store "new/")
+                                            ,@(maildir-find-changed-files store "cur/"))
+        do (format t "~A ~A~%" mtime msg)))
+
+(defun maildir-import-offlineimap (path)
+  (setf path (fad:pathname-as-directory path))
+  (let* ((store (make-instance 'maildir-store :path path))
+         (db (store-db store)))
+    (labels ((add-dir (dir)
+               (for-maildir-files ((store-folder store dir))
+                 for uid = (rx:register-groups-bind (uid) ("U=(\\d+)" filename)
+                             (declare (type string uid))
+                             (parse-integer uid))
+                 when uid do
+                 (let* ((head (with-open-file (in fullname
+                                                  :direction :input
+                                                  :external-format :iso-8859-1)
+                                (parse-rfc822-headers in)))
+                        (message-id (get-header head "Message-Id"))
+                        (date (get-header head "Date"))
+                        (labels (get-header head "X-Keywords")))
+                   (when labels (setf labels (decode-header labels)))
+                   (dbi:with-transaction db
+                     (cond
+                       ((store-get-by-uid store uid)
+                        (return))
+                       (t
+                        (v:debug :import "UID: ~A, Flags: ~A, Labels: ~A" uid flags labels)
+                        (store-insert-message
+                         store
+                         :uid uid
+                         :path path
+                         :internaldate (when date
+                                         (ignore-errors (cl-date-time-parser:parse-date-time date)))
+                         :message-id message-id
+                         :mtime mtime
+                         :flags (mapcar #'as-string flags)
+                         :labels (when labels
+                                   (rx:split "\\s*,\\s*" labels))))))))))
+      (add-dir "new/")
+      (add-dir "cur/")
+      store)))

@@ -51,7 +51,7 @@
    "CREATE TABLE message (
       uid UNSIGNED INTEGER PRIMARY KEY,
       local_uid UNSIGNED INTEGER UNIQUE,
-      path VARCHAR(255),
+      path VARCHAR(255) UNIQUE,
       internaldate INTEGER,
       message_id VARCHAR(255),
       mtime UNSIGNED INTEGER)"
