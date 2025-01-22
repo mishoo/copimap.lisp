@@ -277,7 +277,7 @@ invoke `imap-handle'."
              (string
               (cond
                 ((rx:scan "[\\n\\r\\x00]" tok)
-                 (let ((bytes (trivial-utf-8:string-to-utf-8-bytes tok)))
+                 (let ((bytes (babel:string-to-octets tok :encoding :iso-8859-1)))
                    (cond
                      ((or (<= (length bytes) 4096)
                           (imap-has-capability conn :LITERAL+))
@@ -498,12 +498,12 @@ loop thread is started. Returns `T' on success."
                  (cl+ssl:make-ssl-client-stream (sock:socket-stream sock) :verify nil))
            (setf (imap-text-stream conn)
                  (flex:make-flexi-stream (imap-bin-stream conn)
-                                         :external-format '(:utf-8 :eol-style :crlf)))))
+                                         :external-format '(:iso-8859-1 :eol-style :crlf)))))
       (ecase (imap-use-ssl conn)
         (:STARTTLS
          (setf (imap-text-stream conn)
                (flex:make-flexi-stream (sock:socket-stream sock)
-                                       :external-format '(:utf-8 :eol-style :crlf)))
+                                       :external-format '(:iso-8859-1 :eol-style :crlf)))
          (imap-parse conn)
          (unless (imap-has-capability conn :STARTTLS)
            (error "IMAP server is missing capability: STARTTLS"))
@@ -522,7 +522,7 @@ loop thread is started. Returns `T' on success."
                (flex:make-flexi-stream (sock:socket-stream sock)))
          (setf (imap-text-stream conn)
                (flex:make-flexi-stream (sock:socket-stream sock)
-                                       :external-format '(:utf-8 :eol-style :crlf)))
+                                       :external-format '(:iso-8859-1 :eol-style :crlf)))
          (imap-parse conn)
          (login))))))
 

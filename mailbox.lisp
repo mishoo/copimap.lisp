@@ -39,7 +39,9 @@
 (defmethod imap-on-connect ((conn imap+mailbox))
   (when (imap-has-capability conn :X-GM-EXT-1)
     (setf (mailbox-gmail conn) t)
-    (imap-command conn '(enable :X-GM-EXT-1)))
+    (imap-command conn '(enable :X-GM-EXT-1))
+    ;; (imap-command conn '(enable :UTF8=ACCEPT))
+    )
   (imap-command conn `(:select (:astr ,(mailbox-name conn)))
                 (lambda (arg)
                   (when-ok arg
@@ -61,7 +63,8 @@
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$EXISTS)) arg)
   (setf (mailbox-exists conn) (car arg))
-  (mailbox-fetch-new conn))
+  ;; (mailbox-fetch-new conn)
+  )
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$RECENT)) arg)
   (setf (mailbox-recent conn) (car arg)))

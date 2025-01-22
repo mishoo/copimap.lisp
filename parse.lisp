@@ -71,8 +71,9 @@
            (check-type len fixnum)
            (assert (char= #\} (read-char input)))
            (assert (char= #\Newline (read-char input)))
-           (trivial-utf-8:read-utf-8-string (flex:flexi-stream-stream input)
-                                            :byte-length len)))
+           (let ((seq (make-array len :element-type '(unsigned-byte 8))))
+             (read-sequence seq (flex:flexi-stream-stream input))
+             (babel:octets-to-string seq :encoding :iso-8859-1))))
 
         ((char= #\* ch)
          :*)
@@ -190,8 +191,7 @@
   (loop for ch = (peek-char nil input nil)
         while ch
         while (or (char= #\Space ch)
-                  (char= #\Tab ch)
-                  (char= #\Newline ch))
+                  (char= #\Tab ch))
         do (read-char input)))
 
 (defun %read-until-char (input end)
@@ -233,7 +233,7 @@
                (char= #\Tab ch))))
 
        (read-name ()
-         (intern (%read-until-char input #\:) +atoms-package+))
+         (%read-until-char input #\:))
 
        (read-value ()
          (with-output-to-string (out)
@@ -328,6 +328,9 @@
         (format nil "=?utf-8?b?~A?="
                 (cl-base64:usb8-array-to-base64-string bytes))
         str)))
+
+(defun get-header (headers name)
+  (cdr (assoc name headers :test #'equalp)))
 
 (defun write-rfc822-headers (headers &optional (output t))
   (loop with crlf = #.(coerce #(#\Return #\Newline) 'string)
