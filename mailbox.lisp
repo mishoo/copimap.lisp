@@ -31,6 +31,11 @@
           (rx:regex-replace-all "[\\[\\]]" (mailbox-name conn) "_")))
 
 (defmethod initialize-instance :after ((conn imap+mailbox) &key &allow-other-keys)
+  (when (and (slot-boundp conn 'local-store)
+             (stringp (mailbox-local-store conn)))
+    (setf (mailbox-local-store conn)
+          (make-instance 'maildir-store
+                         :path (mailbox-local-store conn))))
   (unless (slot-boundp conn 'local-store)
     (setf (mailbox-local-store conn)
           (make-instance 'maildir-store
@@ -63,8 +68,7 @@
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$EXISTS)) arg)
   (setf (mailbox-exists conn) (car arg))
-  ;; (mailbox-fetch-new conn)
-  )
+  (mailbox-fetch-new conn))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$RECENT)) arg)
   (setf (mailbox-recent conn) (car arg)))
@@ -89,7 +93,7 @@
   (with-local-store conn
     (let ((uid (or (store-get-last-uid store) 0)))
       (with-idle-resume conn
-        (imap-command conn `(uid search return (max count all) (:range ,(1+ uid) :*))
+        (imap-command conn `(uid search return (max count all) uid (:range ,(1+ uid) *))
                       (lambda (arg &optional ret)
                         (when-ok arg
                           (v:debug :esearch "~S" ret)

@@ -179,9 +179,6 @@ appended)."
 
 (defmethod store-save-messages ((store maildir-store) (conn imap) messages)
   (loop with db = (store-db store)
-        with insert-message = (q-insert-message store)
-        with add-flags = (q-add-flags store)
-        with add-labels = (q-add-labels store)
         with mtime
         for msg in messages
         for uid = (getf msg '$UID)
@@ -217,16 +214,10 @@ appended)."
                                 (if seen
                                     (store-folder store "cur/")
                                     (store-folder store "new/"))
-                                (if seen
-                                    (with-output-to-string (out)
-                                      (format out "~A:2," filename)
-                                      (when (find '$\\Draft flags) (write-char #\D out))
-                                      (when (find '$\\Flagged flags) (write-char #\F out))
-                                      (when (find '$$Forwarded flags) (write-char #\P out))
-                                      (when (find '$\\Answered flags) (write-char #\R out))
-                                      (when seen (write-char #\S out))
-                                      (when (find '$\\Deleted flags) (write-char #\T out)))
-                                    filename))))
+                                (let ((suffix (maildir-file-suffix-from-flags flags)))
+                                  (if (plusp (length suffix))
+                                      (format nil "~A:2,~A" filename suffix)
+                                      filename)))))
                   (rename-file tmpname newname)
                   (setf mtime (file-attributes:modification-time newname)))
                 (store-insert-message store :uid uid
@@ -237,7 +228,7 @@ appended)."
                                             :flags str-flags
                                             :labels str-labels))))))
 
-(defun maildir-flags-from-file (strflags)
+(defun maildir-flags-from-file-suffix (strflags)
   (loop for ch across strflags
         for f = (assoc ch '((#\S . $\\Seen)
                             (#\R . $\\Answered)
@@ -247,6 +238,15 @@ appended)."
                             (#\P . $$Forwarded))
                        :test #'eql)
         when f collect (cdr f)))
+
+(defun maildir-file-suffix-from-flags (flags)
+  (with-output-to-string (out)
+    (when (find '$\\Draft flags) (write-char #\D out))
+    (when (find '$\\Flagged flags) (write-char #\F out))
+    (when (find '$$Forwarded flags) (write-char #\P out))
+    (when (find '$\\Answered flags) (write-char #\R out))
+    (when (find '$\\Seen flags) (write-char #\S out))
+    (when (find '$\\Deleted flags) (write-char #\T out))))
 
 (defmacro for-maildir-files ((dir &optional
                                     (filename 'filename)
@@ -268,7 +268,7 @@ appended)."
                for ,path = (rx:register-groups-bind (mpath mflags)
                                ("^(.*?)(?::2,([^:]*))?$" ,filename)
                              (when mflags
-                               (setf ,flags (maildir-flags-from-file mflags)))
+                               (setf ,flags (maildir-flags-from-file-suffix mflags)))
                              mpath)
                ,@body
                finally (uiop:close-streams ,process)

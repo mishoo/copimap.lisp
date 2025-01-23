@@ -339,15 +339,15 @@
 
 (defun write-rfc822-headers (headers &optional (output t))
   (loop with crlf = #.(coerce #(#\Return #\Newline) 'string)
-        for (key . val) in headers do
-          (write-string (as-string key) output)
-          (write-string ": " output)
-          (etypecase val
-            (string
-             (write-string val output)
-             (write-string crlf output))
-            (list
-             (loop for line in val do
-               (write-string line output)
-               (write-string crlf output))))
+        for (key . val) in headers
+        do (write-string (as-string key) output)
+           (write-string ": " output)
+           (etypecase val
+             (string
+              (write-string val output)
+              (write-string crlf output))
+             (list
+              (loop for line in val do
+                (write-string line output)
+                (write-string crlf output))))
         finally (write-string crlf output)))
