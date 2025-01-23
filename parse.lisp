@@ -232,21 +232,18 @@
            (or (char= #\Space ch)
                (char= #\Tab ch))))
 
+       (%read-until-char (end)
+         (with-output-to-string (out)
+           (loop for ch = (next t)
+                 until (char= end ch)
+                 do (write-char ch out))))
+
        (read-name ()
-         (%read-until-char input #\:))
+         (%read-until-char #\:))
 
        (read-value ()
-         (with-output-to-string (out)
-           (loop for ch = (next) do
-             (cond
-               ((and (char= #\Newline ch)
-                     (continued))
-                (%skip-more-whitespace input)
-                (write-char #\Space out))
-               ((char= #\Newline ch)
-                (return))
-               (t
-                (write-char ch out))))))
+         (loop collect (%read-until-char #\Newline)
+               while (continued)))
 
        (read-header ()
          (cons (read-name)
@@ -258,9 +255,17 @@
           collect (read-header)
           finally (next))))
 
-(defun decode-header (string)
+(defun decode-header (header)
+  (when (listp header)
+    (setf header
+          (with-output-to-string (out)
+            (loop for line in header do
+              (rx:register-groups-bind (content)
+                  ("^\\s+(.*)$" line)
+                (declare (type string content))
+                (write-string content out))))))
   (with-output-to-string (out)
-    (with-input-from-string (in string)
+    (with-input-from-string (in header)
       (let ((buffer (make-array 0 :element-type '(unsigned-byte 8)
                                   :adjustable t :fill-pointer 0))
             (charset nil))
@@ -337,6 +342,12 @@
         for (key . val) in headers do
           (write-string (as-string key) output)
           (write-string ": " output)
-          (write-string val output)
-          (write-string crlf output)
+          (etypecase val
+            (string
+             (write-string val output)
+             (write-string crlf output))
+            (list
+             (loop for line in val do
+               (write-string line output)
+               (write-string crlf output))))
         finally (write-string crlf output)))
