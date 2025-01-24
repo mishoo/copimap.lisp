@@ -232,17 +232,17 @@
            (or (char= #\Space ch)
                (char= #\Tab ch))))
 
-       (%read-until-char (end)
+       (read-until-char (end)
          (with-output-to-string (out)
            (loop for ch = (next t)
                  until (char= end ch)
                  do (write-char ch out))))
 
        (read-name ()
-         (%read-until-char #\:))
+         (read-until-char #\:))
 
        (read-value ()
-         (loop collect (%read-until-char #\Newline)
+         (loop collect (read-until-char #\Newline)
                while (continued)))
 
        (read-header ()
@@ -259,11 +259,15 @@
   (when (listp header)
     (setf header
           (with-output-to-string (out)
-            (loop for line in header do
-              (rx:register-groups-bind (content)
-                  ("^\\s+(.*)$" line)
-                (declare (type string content))
-                (write-string content out))))))
+            (loop for first = t then nil
+                  for line in header
+                  unless first
+                    do (write-char #\Space out)
+                  do (rx:register-groups-bind (content)
+                         ("^\\s*(.*)$" line)
+                       (declare (type string content))
+                       (write-string content out))))))
+
   (with-output-to-string (out)
     (with-input-from-string (in header)
       (let ((buffer (make-array 0 :element-type '(unsigned-byte 8)
@@ -335,7 +339,8 @@
         str)))
 
 (defun get-header (headers name)
-  (cdr (assoc name headers :test #'equalp)))
+  (let ((val (cdr (assoc name headers :test #'equalp))))
+    (when val (decode-header val))))
 
 (defun write-rfc822-headers (headers &optional (output t))
   (loop with crlf = #.(coerce #(#\Return #\Newline) 'string)

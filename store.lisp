@@ -290,26 +290,30 @@ appended)."
   (setf path (fad:pathname-as-directory path))
   (let* ((store (make-instance 'maildir-store :path path))
          (db (store-db store)))
-    (labels ((add-dir (dir)
+    (labels ((add-dir (dir &aux (count 0))
                (for-maildir-files ((store-folder store dir))
                  for uid = (rx:register-groups-bind (uid) ("U=(\\d+)" filename)
                              (declare (type string uid))
                              (parse-integer uid))
                  when uid do
+                 (incf count)
                  (let* ((head (with-open-file (in fullname
                                                   :direction :input
                                                   :external-format :iso-8859-1)
                                 (parse-rfc822-headers in)))
-                        (message-id (get-header head "Message-Id"))
-                        (date (get-header head "Date"))
-                        (labels (get-header head "X-Keywords")))
-                   (when labels (setf labels (decode-header labels)))
+                        (message-id (ignore-errors (get-header head "Message-Id")))
+                        (date (ignore-errors (get-header head "Date")))
+                        (keywords (ignore-errors (get-header head "X-Keywords"))))
+                   (setf flags (mapcar #'as-string flags)
+                         keywords (when keywords
+                                    (rx:split "\\s*,\\s*" keywords)))
                    (dbi:with-transaction db
                      (cond
                        ((store-get-by-uid store uid)
-                        (return))
+                        (store-set-flags store uid flags)
+                        (store-set-labels store uid keywords))
                        (t
-                        (v:debug :import "UID: ~A, Flags: ~A, Labels: ~A" uid flags labels)
+                        (v:debug :import "UID: ~A, Flags: ~A, Labels: ~A" uid flags keywords)
                         (store-insert-message
                          store
                          :uid uid
@@ -318,9 +322,9 @@ appended)."
                                          (ignore-errors (cl-date-time-parser:parse-date-time date)))
                          :message-id message-id
                          :mtime mtime
-                         :flags (mapcar #'as-string flags)
-                         :labels (when labels
-                                   (rx:split "\\s*,\\s*" labels))))))))))
+                         :flags flags
+                         :labels keywords))))))
+               (v:debug :import "~A: checked in ~D messages" dir count)))
       (add-dir "new/")
       (add-dir "cur/")
       store)))

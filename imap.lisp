@@ -533,13 +533,17 @@ loop thread is started. Returns `T' on success."
 
 (defmethod imap-close ((conn imap))
   (when (imap-sock conn)
-    (sock:socket-close (imap-sock conn)))
+    (ignore-errors
+     (sock:socket-close (imap-sock conn))))
   (setf (imap-running conn) nil
         (imap-sock conn) nil
         (imap-bin-stream conn) nil
         (imap-text-stream conn) nil
         (imap-thread conn) nil
-        (imap-idling conn) nil))
+        (imap-sock-lock conn) nil
+        (imap-idling conn) nil
+        (imap-cmdqueue conn) (make-hash-table :test 'equal)
+        (imap-cmdseq conn) 0))
 
 (defmethod imap-read-loop ((conn imap))
   (v:debug :imap "Starting read loop (~A)" (imap-host conn))
