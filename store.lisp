@@ -8,8 +8,10 @@
    (q-insert-message :accessor q-insert-message)
    (q-add-flags :accessor q-add-flags)
    (q-del-flags :accessor q-del-flags)
+   (q-get-flags :accessor q-get-flags)
    (q-add-labels :accessor q-add-labels)
-   (q-del-labels :accessor q-del-labels)))
+   (q-del-labels :accessor q-del-labels)
+   (q-get-labels :accessor q-get-labels)))
 
 (defun store-db-filename (store)
   (uiop:native-namestring
@@ -20,6 +22,10 @@
    (if folder
        (fad:merge-pathnames-as-directory (store-path store) folder)
        (store-path store))))
+
+(defun store-file (store file)
+  (uiop:native-namestring
+   (fad:merge-pathnames-as-file (store-path store) file)))
 
 (defgeneric store-get-last-uid (store))
 (defgeneric store-save-mailbox (store mailbox))
@@ -44,10 +50,14 @@
             (dbi:prepare db "INSERT INTO map_flag_message (flag, message) VALUES (?, ?)"))
       (setf (q-del-flags store)
             (dbi:prepare db "DELETE FROM map_flag_message WHERE message = ?"))
+      (setf (q-get-flags store)
+            (dbi:prepare db "SELECT flag FROM map_flag_message WHERE message = ?"))
       (setf (q-add-labels store)
             (dbi:prepare db "INSERT INTO map_label_message (label, message) VALUES (?, ?)"))
       (setf (q-del-labels store)
-            (dbi:prepare db "DELETE FROM map_label_message WHERE message = ?")))))
+            (dbi:prepare db "DELETE FROM map_label_message WHERE message = ?"))
+      (setf (q-get-labels store)
+            (dbi:prepare db "SELECT label FROM map_label_message WHERE message = ?")))))
 
 (defmethod store-save-mailbox ((store store) (mailbox mailbox))
   (loop with db = (store-db store)
@@ -77,10 +87,20 @@
   (loop for flag in flags
         do (dbi:execute (q-add-flags store) (list flag uid))))
 
+(defmethod store-get-flags ((store store) uid)
+  (mapcar #'second
+          (dbi:fetch-all
+           (dbi:execute (q-get-flags store) (list uid)))))
+
 (defmethod store-set-labels ((store store) uid labels)
   (dbi:execute (q-del-labels store) (list uid))
   (loop for label in labels
         do (dbi:execute (q-add-labels store) (list label uid))))
+
+(defmethod store-get-labels ((store store) uid)
+  (mapcar #'second
+          (dbi:fetch-all
+           (dbi:execute (q-get-labels store) (list uid)))))
 
 (defmethod store-get-last-uid ((store store))
   (sql-single (store-db store)
@@ -257,7 +277,7 @@ appended)."
                              &body body)
   (a:once-only (dir)
     (a:with-gensyms (process in)
-      `(let* ((,process (uiop:launch-program `("ls" "--sort" "t" ,,dir)
+      `(let* ((,process (uiop:launch-program `("ls" "--literal" "--sort" "t" ,,dir)
                                              :output :stream))
               (,in (uiop:process-info-output ,process)))
          (loop with ,flags
