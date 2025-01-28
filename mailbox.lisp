@@ -106,3 +106,34 @@
                                (mailbox-fetch conn new-uids handler))
                               (t
                                (v:info :sync "No new messages")))))))))))
+
+(defmethod mailbox-push-local-changes ((conn imap+mailbox))
+  (with-local-store conn
+    (let* ((changes (store-find-local-changes store))
+           (cmdcount 0)
+           (handler (lambda (arg)
+                      (when-ok arg
+                        (when (zerop (decf cmdcount))
+                          (store-update-for-changes store changes)
+                          (v:debug :push "SUCCESS pushing local changes"))))))
+      (loop for (uid . data) in changes
+            for setcmd = nil
+            do (if (eq uid 'expunged)
+                   (when (imap-has-capability conn :UIDPLUS)
+                     (incf cmdcount)
+                     (imap-command imap `(UID STORE (:seq . ,data) +FLAGS.SILENT ($\\Deleted))
+                                   (lambda (arg)
+                                     (declare (ignore arg))
+                                     (imap-command imap `(UID EXPUNGE (:seq . ,data)) handler))))
+                   (destructuring-bind (&key +label -label +flags -flags &allow-other-keys) data
+                     (when (and +label (mailbox-gmail conn))
+                       (setf setcmd `(+X-GM-LABELS.SILENT (:astr . ,+label) ,@setcmd)))
+                     (when (and -label (mailbox-gmail conn))
+                       (setf setcmd `(-X-GM-LABELS.SILENT (:astr . ,-label) ,@setcmd)))
+                     (when +flags
+                       (setf setcmd `(+FLAGS.SILENT (:astr . ,+flags) ,@setcmd)))
+                     (when -flags
+                       (setf setcmd `(-FLAGS.SILENT (:astr . ,-flags) ,@setcmd)))
+                     (when setcmd
+                       (incf cmdcount)
+                       (imap-command conn `(UID STORE ,uid . ,setcmd) handler))))))))

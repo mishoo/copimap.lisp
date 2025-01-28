@@ -54,11 +54,14 @@
       path VARCHAR(255) UNIQUE,
       internaldate INTEGER,
       message_id VARCHAR(255),
-      mtime UNSIGNED INTEGER)"
+      mtime UNSIGNED INTEGER,
+      encountered BOOLEAN NOT NULL DEFAULT 0)"
 
    "CREATE INDEX idx_message_mtime ON message(mtime)"
 
    "CREATE INDEX idx_message_message_id ON message(message_id)"
+
+   "CREATE INDEX idx_message_encountered ON message(encountered)"
 
    "CREATE TABLE map_flag_message (
       flag VARCHAR(255),
