@@ -166,6 +166,7 @@
 ;; 17-Jul-1996 02:44:25 -0700
 (defun parse-internaldate (internaldate)
   (declare (type string internaldate))
+  (declare (optimize (speed 3)))
   (rx:register-groups-bind (date month year hh mm ss offset-sign offset-hour offset-min)
       ("^ ?(\\d+)-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\\d+) (\\d+):(\\d+):(\\d+) ([+-])?(\\d{2})(\\d{2})$"
        internaldate)
@@ -181,13 +182,14 @@
            (mm (parse-integer mm))
            (ss (parse-integer ss))
            (offset-sign (if (equal offset-sign "-") -1 1))
-           (offset-hour (* offset-sign (parse-integer offset-hour)))
-           (offset-min (* offset-sign (parse-integer offset-min))))
+           (offset-hour (* offset-sign (the (integer 0 99) (parse-integer offset-hour))))
+           (offset-min (* offset-sign (the (integer 0 99) (parse-integer offset-min)))))
       (local-time:encode-timestamp 0 ss mm hh date month year
                                    :offset (+ (* offset-hour 3600)
                                               (* offset-min 60))))))
 
 (defun %skip-more-whitespace (input)
+  (declare (optimize (speed 3)))
   (loop for ch = (peek-char nil input nil)
         while ch
         while (or (char= #\Space ch)
@@ -195,12 +197,15 @@
         do (read-char input)))
 
 (defun %read-until-char (input end)
+  (declare (optimize (speed 3)))
   (with-output-to-string (out)
     (loop for ch = (read-char input)
           until (char= end ch)
           do (write-char ch out))))
 
-(defun parse-rfc822-headers (input)
+(defun parse-rfc822-headers (input &optional handler)
+  (declare (type (or null (function (cons))) handler)
+           (optimize (speed 3)))
   (labels
       ((peek (&optional eof-error)
          (let ((ch (peek-char nil input eof-error)))
@@ -251,11 +256,16 @@
                  (%skip-more-whitespace input)
                  (read-value)))))
 
-    (loop until (char= #\Newline (peek))
-          collect (read-header)
-          finally (next))))
+    (if handler
+        (loop until (or (char= #\Newline (peek))
+                        (funcall handler (read-header))))
+        (loop until (char= #\Newline (peek))
+              collect (read-header)
+              finally (next)))))
 
-(defun decode-header (header)
+(defun decode-header (header &optional flatten-only)
+  (declare (type (or list string) header))
+  (declare (optimize (speed 3)))
   (when (listp header)
     (setf header
           (with-output-to-string (out)
@@ -267,6 +277,9 @@
                          ("^\\s*(.*)$" line)
                        (declare (type string content))
                        (write-string content out))))))
+
+  (when flatten-only
+    (return-from decode-header header))
 
   (with-output-to-string (out)
     (with-input-from-string (in header)
@@ -343,6 +356,7 @@
     (when val (decode-header val))))
 
 (defun write-rfc822-headers (headers &optional (output t))
+  (declare (optimize (speed 3)))
   (loop with crlf = #.(coerce #(#\Return #\Newline) 'string)
         for (key . val) in headers
         do (write-string (as-string key) output)
