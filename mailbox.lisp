@@ -119,12 +119,21 @@
       (loop for (uid . data) in changes
             for setcmd = nil
             do (if (eq uid 'expunged)
-                   (when (imap-has-capability conn :UIDPLUS)
-                     (incf cmdcount)
-                     (imap-command imap `(UID STORE (:seq . ,data) +FLAGS.SILENT ($\\Deleted))
-                                   (lambda (arg)
-                                     (declare (ignore arg))
-                                     (imap-command imap `(UID EXPUNGE (:seq . ,data)) handler))))
+                   (cond
+                     ((mailbox-gmail conn)
+                      ;; for Gmail it seems the proper way to remove
+                      ;; messages is to add the \Trash label.
+                      (incf cmdcount)
+                      (imap-command imap `(UID STORE (:seq . ,data) +X-GM-LABELS.SILENT ($\\Trash))
+                                    handler))
+                     ((imap-has-capability conn :UIDPLUS)
+                      (incf cmdcount)
+                      (imap-command imap `(UID STORE (:seq . ,data) +FLAGS.SILENT ($\\Deleted))
+                                    (lambda (arg)
+                                      (declare (ignore arg))
+                                      (imap-command imap `(UID EXPUNGE (:seq . ,data)) handler))))
+                     (t
+                      (v:warn :expunge "Cannot expunge ~A (missing UIDPLUS)" data)))
                    (destructuring-bind (&key +label -label +flags -flags &allow-other-keys) data
                      (when (and +label (mailbox-gmail conn))
                        (setf setcmd `(+X-GM-LABELS.SILENT (:astr . ,+label) ,@setcmd)))
