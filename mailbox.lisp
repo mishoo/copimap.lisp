@@ -133,7 +133,7 @@
                                       (declare (ignore arg))
                                       (imap-command imap `(UID EXPUNGE (:seq . ,data)) handler))))
                      (t
-                      (v:warn :expunge "Cannot expunge ~A (missing UIDPLUS)" data)))
+                      (v:warn :expunge "Cannot expunge (missing UIDPLUS): ~A" data)))
                    (destructuring-bind (&key +label -label +flags -flags &allow-other-keys) data
                      (when (and +label (mailbox-gmail conn))
                        (setf setcmd `(+X-GM-LABELS.SILENT (:astr . ,+label) ,@setcmd)))

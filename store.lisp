@@ -167,15 +167,22 @@ appended)."
               (rx:regex-replace
                "\\s+$"
                (with-output-to-string (out)
-                 (uiop:run-program
-                  `("find" ,(store-folder store)
-                           "-type" "f"
-                           "-name" ,(format nil "~A*"
-                                            (rx:register-groups-bind (name)
-                                                ("^.*?/(.*?)(?::2,([^:]*))?$"
-                                                 (getf msg :|path|))
-                                              name)))
-                  :output out))
+                 (with-output-to-string (err)
+                   (handler-case
+                       (uiop:run-program
+                        `("find" "-L" "new/" "cur/"
+                                 "-type" "f"
+                                 "-name" ,(format nil "~A*"
+                                                  (rx:register-groups-bind (name)
+                                                      ("^.*?/(.*?)(?::2,([^:]*))?$"
+                                                       (getf msg :|path|))
+                                                    name)))
+                        :output out
+                        :error-output err
+                        :directory (store-folder store))
+                     (error (x)
+                       (v:error :ERROR "~A" x)
+                       (v:error :ERROR "~A" (get-output-stream-string err))))))
                "")))
         (if (string= filename "") nil filename)))))
 
@@ -288,23 +295,27 @@ appended)."
                                     (uid 'uid))
                              &body body)
   (a:once-only (dir)
-    (a:with-gensyms (process in)
-      `(let* ((,process (uiop:launch-program `("find" "cur/" "new/"
+    (a:with-gensyms (process in line)
+      `(let* ((,process (uiop:launch-program `("find" "-L" "new/" "cur/"
                                                       "-type" "f"
-                                                      "-print")
+                                                      "-printf" "%Ts %p\\n")
                                              :directory ,dir
                                              :output :stream))
               (,in (uiop:process-info-output ,process)))
-         (loop with ,flags
-               for ,filename = (read-line ,in nil)
-               while ,filename
-               for ,fullname = (concatenate 'string ,dir ,filename)
-               for ,mtime fixnum = (file-attributes:modification-time ,fullname)
-               for ,uid = (rx:register-groups-bind (muid mflags)
-                              ("^.*?U=(\\d+).*?(?::2,([^:]*))?$" ,filename)
-                            (when mflags
-                              (setf ,flags (maildir-flags-from-file-suffix mflags)))
-                            (parse-integer muid))
+         (loop with ,flags and ,filename and ,fullname and ,mtime
+               for ,line = (read-line ,in nil)
+               while ,line
+               for ,uid = (rx:register-groups-bind (_mtime _filename _uid _flags)
+                              ("^(\\d+) (.*?U=(\\d+).*?(?::2,([^:]*))?)$" ,line)
+                            (declare (type string _mtime _filename _uid)
+                                     (type (or null string) _flags))
+                            (setf ,mtime (+ (the fixnum (parse-integer _mtime))
+                                            #.(encode-universal-time 0 0 0 1 1 1970 0))
+                                  ,filename _filename
+                                  ,fullname (concatenate 'string ,dir _filename))
+                            (when _flags
+                              (setf ,flags (maildir-flags-from-file-suffix _flags)))
+                            (parse-integer _uid))
                ,@body
                finally (uiop:close-streams ,process)
                        (uiop:terminate-process ,process))))))
