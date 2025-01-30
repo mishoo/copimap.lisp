@@ -13,7 +13,9 @@
    (q-add-labels :accessor q-add-labels)
    (q-del-labels :accessor q-del-labels)
    (q-get-labels :accessor q-get-labels)
-   (q-set-encountered :accessor q-set-encountered)))
+   (q-set-encountered :accessor q-set-encountered)
+   (q-get-metadata :accessor q-get-metadata)
+   (q-set-metadata :accessor q-set-metadata)))
 
 (defun store-db-filename (store)
   (uiop:native-namestring
@@ -35,6 +37,8 @@
 (defgeneric store-find-local-changes (store))
 (defgeneric store-get-by-uid (store uid))
 (defgeneric store-get-by-path (store path))
+(defgeneric store-get-metadata (store key))
+(defgeneric store-set-metadata (store key &key intval txtval binval))
 
 (defmethod initialize-instance :after ((store store) &key &allow-other-keys)
   (with-slots (path db) store
@@ -63,7 +67,12 @@
       (setf (q-get-labels store)
             (dbi:prepare db "SELECT label FROM map_label_message WHERE message = ?"))
       (setf (q-set-encountered store)
-            (dbi:prepare db "UPDATE message SET encountered = 1 WHERE uid = ?")))))
+            (dbi:prepare db "UPDATE message SET encountered = 1 WHERE uid = ?"))
+      (setf (q-get-metadata store)
+            (dbi:prepare db "SELECT intval, txtval, binval FROM mailbox WHERE key = ?"))
+      (setf (q-set-metadata store)
+            (dbi:prepare db "INSERT INTO mailbox (key, intval, txtval, binval) VALUES (?, ?, ?, ?)
+                             ON CONFLICT(key) DO UPDATE SET intval = ?, txtval = ?, binval = ?")))))
 
 (defmethod store-save-mailbox ((store store) (mailbox mailbox))
   (loop with db = (store-db store)
@@ -71,7 +80,22 @@
                                       ON CONFLICT(key) DO UPDATE SET intval = ?")
         for key in '(exists recent unseen uidvalidity uidnext highestmodseq)
         for val = (slot-value mailbox key)
-        do (dbi:execute query (list (symbol-name key) val))))
+        do (dbi:execute query (list (symbol-name key) val val))))
+
+(defmethod store-get-metadata ((store store) (key string))
+  (dbi:fetch (dbi:execute
+              (q-get-metadata store) (list key))
+             :format :values))
+
+(defmethod store-get-metadata ((store store) (key symbol))
+  (store-get-metadata store (symbol-name key)))
+
+(defmethod store-set-metadata ((store store) (key string) &key intval txtval binval)
+  (dbi:execute
+   (q-set-metadata store) (list key intval txtval binval intval txtval binval)))
+
+(defmethod store-set-metadata ((store store) (key symbol) &rest args)
+  (apply #'store-set-metadata store (symbol-name key) args))
 
 (defmethod store-insert-message ((store store)
                                  &key

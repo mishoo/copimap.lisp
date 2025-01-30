@@ -11,7 +11,8 @@
    (unseen :initform 0 :initarg :unseen :accessor mailbox-unseen)
    (uidvalidity :initform nil :initarg :uidvalidity :accessor mailbox-uidvalidity)
    (uidnext :initform 0 :initarg :uidnext :accessor mailbox-uidnext)
-   (highestmodseq :initform 0 :initarg :highestmodseq :accessor mailbox-highestmodseq)))
+   (highestmodseq :initform 0 :initarg :highestmodseq :accessor mailbox-highestmodseq)
+   (valid :initform nil :accessor mailbox-valid)))
 
 (defclass imap+mailbox (imap mailbox)
   ((local-store :initarg :local-store :accessor mailbox-local-store)
@@ -47,10 +48,27 @@
     (imap-command conn '(enable :X-GM-EXT-1))
     ;; (imap-command conn '(enable :UTF8=ACCEPT))
     )
-  (imap-command conn `(:select (:astr ,(mailbox-name conn)))
-                (lambda (arg)
-                  (when-ok arg
-                    (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))))))
+  (imap-command
+   conn `(:select (:astr ,(mailbox-name conn)))
+   (lambda (arg)
+     (when-ok arg
+       (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))
+       (with-local-store conn
+         (let ((saved-uidvalidity (car (store-get-metadata store '$UIDVALIDITY))))
+           (cond
+             ((and saved-uidvalidity
+                   (/= saved-uidvalidity
+                       (mailbox-uidvalidity conn)))
+              (v:error :mailbox "UIDVALIDITY mismatch (saved: ~A, current: ~A)"
+                       saved-uidvalidity (mailbox-uidvalidity conn))
+              (imap-command conn :logout))
+             (t
+              (if saved-uidvalidity
+                  (v:info :mailbox "UIDVALIDITY good")
+                  (v:info :mailbox "UIDVALIDITY initialized"))
+              (store-save-mailbox store conn)
+              (setf (mailbox-valid conn) t)
+              (mailbox-fetch-new conn)))))))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$OK)) arg)
   (when (listp (car arg))
@@ -67,8 +85,10 @@
   (setf (mailbox-flags conn) (car arg)))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$EXISTS)) arg)
-  (setf (mailbox-exists conn) (car arg))
-  (mailbox-fetch-new conn))
+  (let ((newval (car arg)))
+    (when (mailbox-valid conn)
+      (mailbox-fetch-new conn))
+    (setf (mailbox-exists conn) newval)))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$RECENT)) arg)
   (setf (mailbox-recent conn) (car arg)))
