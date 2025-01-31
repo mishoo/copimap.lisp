@@ -482,6 +482,21 @@ loop thread is started. Returns `T' on success."
     (setf (imap-sock conn) sock
           (imap-idling conn) nil
           (imap-sock-lock conn) (bt2:make-recursive-lock :name tname))
+
+    (setf (usocket:socket-option sock :tcp-nodelay) t
+          (usocket:socket-option sock :tcp-keepalive) t)
+
+    ;; Without these, the socket would remain stuck for dozens of
+    ;; minutes when the network goes down (or e.g. you switch wifi
+    ;; networks). Since `usocket:socket-option' doesn't provide
+    ;; setters for them, these are SBCL-only.
+    #+sbcl
+    (progn
+      ;; XXX: perhaps these values are too low?
+      (setf (sb-bsd-sockets:sockopt-tcp-keepidle (usocket:socket sock)) 10)
+      (setf (sb-bsd-sockets:sockopt-tcp-keepintvl (usocket:socket sock)) 3)
+      (setf (sb-bsd-sockets:sockopt-tcp-keepcnt (usocket:socket sock)) 3))
+
     (labels
         ((login (&aux authenticated)
            (imap-command-sync conn `(:LOGIN ,(imap-user conn)
@@ -548,19 +563,41 @@ loop thread is started. Returns `T' on success."
 (defmethod imap-read-loop ((conn imap))
   (v:debug :imap "Starting read loop (~A)" (imap-host conn))
   (imap-on-connect conn)
-  (loop for poll-time = (imap-poll-time conn)
-        while (imap-running conn)
-        when (and poll-time
-                  (<= poll-time (- (get-universal-time)
-                                   (imap-last-command-time conn))))
-          do (with-idle-resume conn
-               (imap-command conn "NOOP"))
-        do (sock:wait-for-input (imap-sock conn) :timeout 1)
-           (with-sock-lock conn
-             (loop while (and (imap-running conn)
-                              (listen (imap-text-stream conn)))
-                   do (imap-parse conn))))
-  (v:debug :imap "Loop terminated (~A)" (imap-host conn)))
+  (labels
+      ((reconnect (&aux was-idle)
+         (setf was-idle (imap-idling conn))
+         (imap-close conn)
+         (loop with count = 0
+               until (loop repeat 3
+                           do (v:debug :CONNECT "Attempting reconnect ~A ~A.."
+                                       (imap-host conn) (incf count))
+                           when (imap-connect conn)
+                             do (return t)
+                           do (sleep 2)
+                           finally (return nil))
+               do (v:debug :CONNECT "Waiting 10 seconds")
+                  (sleep 10))
+         (when was-idle
+           (imap-start-idle conn))))
+    (handler-case
+        (loop for poll-time = (imap-poll-time conn)
+              while (imap-running conn)
+              when (and poll-time
+                        (<= poll-time (- (get-universal-time)
+                                         (imap-last-command-time conn))))
+                do (with-idle-resume conn
+                     (imap-command conn "NOOP"))
+              do (sock:wait-for-input (imap-sock conn) :timeout 1)
+                 (with-sock-lock conn
+                   (loop while (and (imap-running conn)
+                                    (listen (imap-text-stream conn)))
+                         do (imap-parse conn))))
+      (sock:socket-error (ex)
+        (v:error :SOCKET "ERROR ~A" ex)
+        (reconnect))
+      (cl+ssl::ssl-error (ex)
+        (v:error :SOCKET "ERROR ~A" ex)
+        (reconnect)))))
 
 (defmethod imap-start-read-loop ((conn imap))
   (let ((tname (format nil "IMAP:~A/~A" (imap-host conn) (imap-user conn))))
