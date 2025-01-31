@@ -20,6 +20,10 @@
 
 (defgeneric mailbox-fetch (mailbox uids &optional handler))
 
+(defmethod imap-close ((conn imap+mailbox))
+  (setf (mailbox-valid conn) nil)
+  (call-next-method))
+
 (defmacro with-local-store (conn &body body)
   `(with-slots ((store local-store)) ,conn
      (when store
@@ -44,31 +48,29 @@
 
 (defmethod imap-on-connect ((conn imap+mailbox))
   (when (imap-has-capability conn :X-GM-EXT-1)
-    (setf (mailbox-gmail conn) t)
-    (imap-command conn '(enable :X-GM-EXT-1))
-    ;; (imap-command conn '(enable :UTF8=ACCEPT))
-    )
-  (imap-command
-   conn `(:select (:astr ,(mailbox-name conn)))
-   (lambda (arg)
-     (when-ok arg
-       (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))
-       (with-local-store conn
-         (let ((saved-uidvalidity (car (store-get-metadata store '$UIDVALIDITY))))
-           (cond
-             ((and saved-uidvalidity
-                   (/= saved-uidvalidity
-                       (mailbox-uidvalidity conn)))
-              (v:error :mailbox "UIDVALIDITY mismatch (saved: ~A, current: ~A)"
-                       saved-uidvalidity (mailbox-uidvalidity conn))
-              (imap-command conn :logout))
-             (t
-              (if saved-uidvalidity
-                  (v:info :mailbox "UIDVALIDITY good")
-                  (v:info :mailbox "UIDVALIDITY initialized"))
-              (store-save-mailbox store conn)
-              (setf (mailbox-valid conn) t)
-              (mailbox-fetch-new conn)))))))))
+    (setf (mailbox-gmail conn) t))
+  (with-idle-resume conn
+    (imap-command
+     conn `(:select (:astr ,(mailbox-name conn)))
+     (lambda (arg)
+       (when-ok arg
+         (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))
+         (with-local-store conn
+           (let ((saved-uidvalidity (car (store-get-metadata store '$UIDVALIDITY))))
+             (cond
+               ((and saved-uidvalidity
+                     (/= saved-uidvalidity
+                         (mailbox-uidvalidity conn)))
+                (v:error :mailbox "UIDVALIDITY mismatch (saved: ~A, current: ~A)"
+                         saved-uidvalidity (mailbox-uidvalidity conn))
+                (imap-command conn :logout))
+               (t
+                (if saved-uidvalidity
+                    (v:info :mailbox "UIDVALIDITY good")
+                    (v:info :mailbox "UIDVALIDITY initialized"))
+                (store-save-mailbox store conn)
+                (setf (mailbox-valid conn) t)
+                (mailbox-fetch-new conn))))))))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$OK)) arg)
   (when (listp (car arg))
@@ -136,33 +138,33 @@
                         (when (zerop (decf cmdcount))
                           (store-update-for-changes store changes)
                           (v:debug :push "SUCCESS pushing local changes"))))))
-      (loop for (uid . data) in changes
-            for setcmd = nil
-            do (if (eq uid 'expunged)
-                   (cond
-                     ((mailbox-gmail conn)
-                      ;; for Gmail it seems the proper way to remove
-                      ;; messages is to add the \Trash label.
-                      (incf cmdcount)
-                      (imap-command imap `(UID STORE (:seq . ,data) +X-GM-LABELS.SILENT ($\\Trash))
-                                    handler))
-                     ((imap-has-capability conn :UIDPLUS)
-                      (incf cmdcount)
-                      (imap-command imap `(UID STORE (:seq . ,data) +FLAGS.SILENT ($\\Deleted))
-                                    (lambda (arg)
-                                      (declare (ignore arg))
-                                      (imap-command imap `(UID EXPUNGE (:seq . ,data)) handler))))
-                     (t
-                      (v:warn :expunge "Cannot expunge (missing UIDPLUS): ~A" data)))
-                   (destructuring-bind (&key +label -label +flags -flags &allow-other-keys) data
-                     (when (and +label (mailbox-gmail conn))
-                       (setf setcmd `(+X-GM-LABELS.SILENT (:astr . ,+label) ,@setcmd)))
-                     (when (and -label (mailbox-gmail conn))
-                       (setf setcmd `(-X-GM-LABELS.SILENT (:astr . ,-label) ,@setcmd)))
-                     (when +flags
-                       (setf setcmd `(+FLAGS.SILENT (:astr . ,+flags) ,@setcmd)))
-                     (when -flags
-                       (setf setcmd `(-FLAGS.SILENT (:astr . ,-flags) ,@setcmd)))
-                     (when setcmd
-                       (incf cmdcount)
-                       (imap-command conn `(UID STORE ,uid . ,setcmd) handler))))))))
+      (when changes
+        (with-idle-resume conn
+          (loop for (uid . data) in changes
+                for setcmd = nil
+                do (if (eq uid 'expunged)
+                       (cond
+                         ((mailbox-gmail conn)
+                          ;; for Gmail it seems the proper way to remove
+                          ;; messages is to add the \Trash label.
+                          (incf cmdcount)
+                          (imap-command imap `(UID STORE (:seq . ,data) +X-GM-LABELS.SILENT ($\\Trash))
+                                        handler))
+                         ((imap-has-capability conn :UIDPLUS)
+                          (incf cmdcount)
+                          (imap-command imap `(UID STORE (:seq . ,data) +FLAGS.SILENT ($\\Deleted)))
+                          (imap-command imap `(UID EXPUNGE (:seq . ,data)) handler))
+                         (t
+                          (v:warn :expunge "Cannot expunge (missing UIDPLUS): ~A" data)))
+                       (destructuring-bind (&key +label -label +flags -flags &allow-other-keys) data
+                         (when (and +label (mailbox-gmail conn))
+                           (setf setcmd `(+X-GM-LABELS.SILENT (:astr . ,+label) ,@setcmd)))
+                         (when (and -label (mailbox-gmail conn))
+                           (setf setcmd `(-X-GM-LABELS.SILENT (:astr . ,-label) ,@setcmd)))
+                         (when +flags
+                           (setf setcmd `(+FLAGS.SILENT (:astr . ,+flags) ,@setcmd)))
+                         (when -flags
+                           (setf setcmd `(-FLAGS.SILENT (:astr . ,-flags) ,@setcmd)))
+                         (when setcmd
+                           (incf cmdcount)
+                           (imap-command conn `(UID STORE ,uid . ,setcmd) handler))))))))))
