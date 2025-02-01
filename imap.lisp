@@ -13,10 +13,10 @@
              :documentation "IMAP user password. Pass either the raw password as string, or a list
 to invoke an external program (should write the password to standard
 output). External programs are run via `uiop:run-program'. If the form
-is (:shell \"command\") then we'll pass :force-shell `T'.")
+is (:shell \"command\") then we'll pass :force-shell T.")
 
    (use-ssl :initarg :use-ssl :accessor imap-use-ssl :initform t
-            :documentation "Pass `T' to use SSL (default), `:STARTTLS' or
+            :documentation "Pass T to use SSL (default), `:STARTTLS' or
 `:nope-just-send-my-password-in-clear-text'. Note that for `:STARTTLS'
 we require the server to advertise the `STARTTLS' capability; login
 will not be attempted over plain text.")
@@ -49,7 +49,7 @@ will not be attempted over plain text.")
            :documentation "The read loop thread.")
 
    (running :initform nil :accessor imap-running
-            :documentation "The read loop will continue as long as this remains `T'.")
+            :documentation "The read loop will continue as long as this remains T.")
 
    (reconnect :initform t :accessor imap-reconnect
               :documentation "Wether to attempt reconnecting when the socket is closed. See
@@ -83,6 +83,80 @@ see. Use `imap-command' to send commands to the IMAP server, and
 specialize `imap-handle' in your own subclasses in order to retrieve
 results from the server."))
 
+(defgeneric imap-connect (imap)
+  (:documentation "
+Starts the IMAP connection. After successful authentication the read
+loop thread is started. Returns T on success."))
+
+(defgeneric imap-close (imap)
+  (:documentation "Close the connection"))
+
+(defgeneric imap-parse (imap)
+  (:documentation "
+Parse one command line from the server. Invokes `imap-handle' for
+untagged notifications. On tagged responses it invokes the associated
+handler from `imap-cmdqueue', if found.
+
+The command line, as returned by `parse-imap-cmdline', is a list of
+tokens (similar to the ones that you send to `imap-command'). The
+first is `:untagged' for notifications or `:continue' for continuation
+requests, otherwise it's a request ID followed by return value.
+
+IMAP atoms are similar to Lisp symbols, so they are parsed as such,
+and interned into `+atoms-package+' (COPIMAP-ATOMS). Note that the
+reader syntax in `COPIMAP' defines a custom reader for $ which interns
+symbols in `+atoms-package+'. This reader is case sensitive, so symbol
+`$OK' will be different from `$ok'."))
+
+(defgeneric imap-handle (imap cmd arg)
+  (:documentation "
+Will be invoked by `imap-parse' for untagged notification. `cmd' is
+the notification label as a copimap symbol (e.g. $FETCH, $EXISTS etc.)
+and `arg' contains whatever arguments were sent."))
+
+(defgeneric imap-command (imap cmd &optional handler)
+  (:documentation "
+Send a command to the IMAP server. The function returns immediately,
+and `handler' will be invoked from the read thread when a tagged
+response comes back. See the documentation of the available methods;
+the most useful one is where `cmd' is a list."))
+
+(defgeneric imap-command-sync (imap cmdstr &optional handler)
+  (:documentation "
+Synchronously execute command. This holds the mutex and parses server
+output until a tagged response for our command comes back (at which
+point `handler' will be invoked with the argument). Note that you
+cannot use this for the IDLE command (there won't be a tagged answer
+until you send DONE)."))
+
+(defgeneric imap-start-idle (imap &optional handler)
+  (:documentation "
+Enter IDLE mode. While idling the server can send notifications which
+will be handled by the read loop thread via `imap-parse'. Sending any
+`imap-command' while a connection is idling will automatically stop
+IDLE mode, and resume it back after sending the command. See also
+macro `with-idle-resume'."))
+
+(defgeneric imap-stop-idle (imap)
+  (:documentation "Ends IDLE mode."))
+
+(defgeneric imap-has-capability (imap capability)
+  (:documentation "
+Checks if the server advertises the `cap' capability (should be a
+keyword symbol)."))
+
+(defgeneric imap-write (imap str))
+
+(defgeneric imap-read-loop (imap))
+(defgeneric imap-start-read-loop (imap))
+
+(defgeneric imap-on-connect (imap)
+  (:documentation "
+Will be invoked after successful authentication. Could be useful in
+subclasses, for example to re-SELECT the appropriate mailbox."))
+
+;;;;; implementation
+
 (defmacro with-sock-lock (conn &body body)
   `(bt2:with-recursive-lock-held ((imap-sock-lock ,conn))
      ,@body))
@@ -101,30 +175,12 @@ results from the server."))
         (let ((shell nil))
           (when (eq :shell (car pass))
             (setf pass (cdr pass) shell t))
-          (rx:regex-replace "\\s+$"
-                            (with-output-to-string (out)
-                              (with-output-to-string (err)
-                                (uiop:run-program pass :output out
-                                                       :error-output err
-                                                       :force-shell shell)))
-                            "")))))
-
-(defgeneric imap-connect (imap))
-(defgeneric imap-close (imap))
-(defgeneric imap-parse (imap))
-(defgeneric imap-read-loop (imap))
-(defgeneric imap-start-read-loop (imap))
-(defgeneric imap-handle (imap cmd arg))
-(defgeneric imap-command (imap cmdstr &optional handler))
-(defgeneric imap-command-sync (imap cmdstr &optional handler))
-(defgeneric imap-start-idle (imap &optional handler))
-(defgeneric imap-stop-idle (imap))
-(defgeneric imap-has-capability (imap capability))
-(defgeneric imap-write (imap str))
-
-(defgeneric imap-on-connect (imap)
-  (:documentation "Will be invoked after successful authentication. Could be useful in
-subclasses, for example to re-SELECT the appropriate mailbox."))
+          (string-trim '(#\Return #\Newline)
+                       (with-output-to-string (out)
+                         (with-output-to-string (err)
+                           (uiop:run-program pass :output out
+                                                  :error-output err
+                                                  :force-shell shell))))))))
 
 (defmethod imap-on-connect ((conn imap))
   (v:debug :imap "Connected to ~A (~A)" (imap-host conn) (imap-user conn)))
@@ -161,8 +217,6 @@ subclasses, for example to re-SELECT the appropriate mailbox."))
       x))
 
 (defmethod imap-has-capability ((conn imap) (cap symbol))
-  "Checks if the server advertises the `cap' capability (should be a
-keyword symbol)."
   (find cap (imap-capability conn)))
 
 (defmethod imap-write ((conn imap) (data string))
@@ -367,11 +421,6 @@ restart IDLE mode. When IDLE mode is off, just execute `body'."
 
 (defmethod imap-start-idle ((conn imap) &optional handler
                             &aux reqid)
-  "Enter IDLE mode. While idling the server can send notifications which
-will be handled by the read loop thread via `imap-parse'. Sending any
-`imap-command' while a connection is idling will automatically stop
-IDLE mode, and resume it back after sending the command. See also
-macro `with-idle-resume'."
   (unless (imap-idling conn)
     (with-sock-lock conn
       (unless (imap-idling conn)
@@ -386,36 +435,16 @@ macro `with-idle-resume'."
               (imap-idling conn) reqid)))))
 
 (defmethod imap-stop-idle ((conn imap))
-  "Ends IDLE mode."
   (when (imap-idling conn)
     (imap-write conn "DONE")
     (setf (imap-idling conn) nil)))
 
 (defmethod imap-command-sync ((conn imap) cmd &optional handler)
-  "Synchronously execute command. This holds the mutex and parses server
-output until a tagged response for our command comes back (at which
-point `handler' will be invoked with the argument). Note that you
-cannot use this for the IDLE command (there won't be a tagged answer
-until you send DONE)."
   (with-sock-lock conn
     (let ((reqid (imap-command conn cmd handler)))
       (loop until (equal reqid (imap-parse conn))))))
 
 (defmethod imap-parse ((conn imap))
-  "Parse one command line from the server. Invokes `imap-handle' for
-untagged notifications. On tagged responses it invokes the associated
-handler from `imap-cmdqueue', if found.
-
-The command line, as returned by `parse-imap-cmdline', is a list of
-tokens (similar to the ones that you send to `imap-command'). The
-first is `:untagged' for notifications or `:continue' for continuation
-requests, otherwise it's a request ID followed by return value.
-
-IMAP atoms are similar to Lisp symbols, so they are parsed as such,
-and interned into `+atoms-package+' (COPIMAP-ATOMS). Note that the
-reader syntax in `COPIMAP' defines a custom reader for $ which
-interns symbols in `+atoms-package+'. This reader is case sensitive,
-so symbol `$OK' will be different from `$ok'."
   (let* ((line (parse-imap-cmdline (imap-text-stream conn))))
     (v:trace :input "~A" line)
     (cond
@@ -472,8 +501,6 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
   (v:debug :imap "[~A] ~A" cmd arg))
 
 (defmethod imap-connect ((conn imap))
-  "Starts the IMAP connection. After successful authentication the read
-loop thread is started. Returns `T' on success."
   (let* ((sock (sock:socket-connect (imap-host conn)
                                     (imap-port conn)
                                     :element-type '(unsigned-byte 8)))
