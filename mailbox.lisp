@@ -46,28 +46,27 @@
   (setf (mailbox-valid conn) nil)
   (when (imap-has-capability conn :X-GM-EXT-1)
     (setf (mailbox-gmail conn) t))
-  (with-idle-resume conn
-    (imap-command
-     conn `(:select (:astr ,(mailbox-name conn)))
-     (lambda (arg)
-       (when-ok arg
-         (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))
-         (with-local-store conn
-           (let ((saved-uidvalidity (car (store-get-metadata store '$UIDVALIDITY))))
-             (cond
-               ((and saved-uidvalidity
-                     (/= saved-uidvalidity
-                         (mailbox-uidvalidity conn)))
-                (v:error :mailbox "UIDVALIDITY mismatch (saved: ~A, current: ~A)"
-                         saved-uidvalidity (mailbox-uidvalidity conn))
-                (imap-command conn :logout))
-               (t
-                (if saved-uidvalidity
-                    (v:info :mailbox "UIDVALIDITY good")
-                    (v:info :mailbox "UIDVALIDITY initialized"))
-                (store-save-mailbox store conn)
-                (setf (mailbox-valid conn) t)
-                (mailbox-fetch-new conn))))))))))
+  (imap-command
+   conn `(:select (:astr ,(mailbox-name conn)))
+   (lambda (arg)
+     (when-ok arg
+       (v:info :mailbox "Selected mailbox ~A/~A" (mailbox-name conn) (caar arg))
+       (with-local-store conn
+         (let ((saved-uidvalidity (car (store-get-metadata store '$UIDVALIDITY))))
+           (cond
+             ((and saved-uidvalidity
+                   (/= saved-uidvalidity
+                       (mailbox-uidvalidity conn)))
+              (v:error :mailbox "UIDVALIDITY mismatch (saved: ~A, current: ~A)"
+                       saved-uidvalidity (mailbox-uidvalidity conn))
+              (imap-command conn :logout))
+             (t
+              (if saved-uidvalidity
+                  (v:info :mailbox "UIDVALIDITY good")
+                  (v:info :mailbox "UIDVALIDITY initialized"))
+              (store-save-mailbox store conn)
+              (setf (mailbox-valid conn) t)
+              (mailbox-fetch-new conn)))))))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$OK)) arg)
   (when (listp (car arg))
@@ -97,34 +96,32 @@
     (store-save-messages store conn (list (cadr arg)))))
 
 (defmethod mailbox-fetch ((conn imap+mailbox) uids &optional handler)
-  (with-idle-resume conn
-    (imap-command conn
-                  `(UID FETCH ,uids
-                        (UID
-                         INTERNALDATE
-                         ENVELOPE
-                         FLAGS
-                         ,@(when (mailbox-gmail conn) '(X-GM-LABELS))
-                         (:BODY.PEEK)))
-                  handler)))
+  (imap-command conn
+                `(UID FETCH ,uids
+                      (UID
+                       INTERNALDATE
+                       ENVELOPE
+                       FLAGS
+                       ,@(when (mailbox-gmail conn) '(X-GM-LABELS))
+                       (:BODY.PEEK)))
+                handler))
 
 (defmethod mailbox-fetch-new ((conn imap+mailbox) &optional handler)
   (with-local-store conn
     (let ((uid (or (store-get-last-uid store) 0)))
-      (with-idle-resume conn
-        (imap-command conn `(uid search return (max count all) uid (:range ,(1+ uid) *))
-                      (lambda (arg &optional ret)
-                        (when-ok arg
-                          (v:debug :esearch "~S" ret)
-                          (let ((max (getf (cdr ret) '$MAX 0))
-                                (count (getf (cdr ret) '$COUNT 0))
-                                (new-uids (getf (cdr ret) '$ALL)))
-                            (cond
-                              ((< uid max)
-                               (v:info :sync "Fetching ~D new messages" count)
-                               (mailbox-fetch conn new-uids handler))
-                              (t
-                               (v:info :sync "No new messages")))))))))))
+      (imap-command conn `(uid search return (max count all) uid (:range ,(1+ uid) *))
+                    (lambda (arg &optional ret)
+                      (when-ok arg
+                        (v:debug :esearch "~S" ret)
+                        (let ((max (getf (cdr ret) '$MAX 0))
+                              (count (getf (cdr ret) '$COUNT 0))
+                              (new-uids (getf (cdr ret) '$ALL)))
+                          (cond
+                            ((< uid max)
+                             (v:info :sync "Fetching ~D new messages" count)
+                             (mailbox-fetch conn new-uids handler))
+                            (t
+                             (v:info :sync "No new messages"))))))))))
 
 (defmethod mailbox-push-local-changes ((conn imap+mailbox))
   (with-local-store conn

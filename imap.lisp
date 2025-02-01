@@ -436,8 +436,10 @@ restart IDLE mode. When IDLE mode is off, just execute `body'."
 
 (defmethod imap-stop-idle ((conn imap))
   (when (imap-idling conn)
-    (imap-write conn "DONE")
-    (setf (imap-idling conn) nil)))
+    (with-sock-lock conn
+      (when (imap-idling conn)
+        (imap-write conn "DONE")
+        (setf (imap-idling conn) nil)))))
 
 (defmethod imap-command-sync ((conn imap) cmd &optional handler)
   (with-sock-lock conn
@@ -611,8 +613,7 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
               when (and poll-time
                         (<= poll-time (- (get-universal-time)
                                          (imap-last-command-time conn))))
-                do (with-idle-resume conn
-                     (imap-command conn "NOOP"))
+                do (imap-command conn "NOOP")
               do (sock:wait-for-input (imap-sock conn) :timeout 1)
                  (with-sock-lock conn
                    (loop while (and (imap-running conn)
