@@ -20,10 +20,6 @@
 
 (defgeneric mailbox-fetch (mailbox uids &optional handler))
 
-(defmethod imap-close ((conn imap+mailbox))
-  (setf (mailbox-valid conn) nil)
-  (call-next-method))
-
 (defmacro with-local-store (conn &body body)
   `(with-slots ((store local-store)) ,conn
      (when store
@@ -47,6 +43,7 @@
                          :path (mailbox-local-store-directory conn)))))
 
 (defmethod imap-on-connect ((conn imap+mailbox))
+  (setf (mailbox-valid conn) nil)
   (when (imap-has-capability conn :X-GM-EXT-1)
     (setf (mailbox-gmail conn) t))
   (with-idle-resume conn

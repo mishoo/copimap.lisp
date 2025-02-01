@@ -188,10 +188,10 @@ keyword symbol)."
 (defmethod imap-command ((conn imap) (cmdstr string) &optional handler)
   "Send a raw command. Use this for simple commands, or if you know what
 you're doing."
-  (v:debug :send "~A" cmdstr)
   (let ((reqid (imap-new-request-id conn handler))
         (stream (imap-text-stream conn)))
     (with-sock-lock conn
+      (v:debug :send "~A: ~A" reqid cmdstr)
       (write-string reqid stream)
       (write-char #\Space stream)
       (write-line cmdstr stream)
@@ -259,9 +259,6 @@ Various data requested by your command may come before your handler is
 called, via untagged notifications, for which the read loop will
 invoke `imap-handle'."
   (with-sock-lock conn
-    (v:debug :send "~S" (if (eq :login (car cmd))
-                            '(:login |...|)
-                            cmd))
     (labels
         ((write-delimited (sep list)
            (loop for first = t then nil
@@ -330,53 +327,17 @@ invoke `imap-handle'."
               (write-sequence tok (imap-bin-stream conn))
               (force-output (imap-bin-stream conn))))))
       (let ((reqid (imap-new-request-id conn handler)))
+        (v:debug :send "~A: ~A"
+                 reqid
+                 (if (eq :login (car cmd))
+                     '(:login |...|)
+                     cmd))
         (write-string reqid stream)
         (write-char #\Space stream)
         (write-delimited #\Space cmd)
         (write-char #\Newline stream)
         (force-output stream)
         reqid))))
-
-(defmethod imap-command :before ((conn imap) cmd &optional handler)
-  (declare (ignore cmd handler))
-  (imap-maybe-reconnect conn)
-  (setf (imap-last-command-time conn) (get-universal-time)))
-
-(defmethod imap-command :around ((conn imap) cmd &optional handler)
-  "Wrapper around `imap-command' which turns off IDLE mode."
-  (declare (ignore cmd handler))
-  (when (imap-idling conn)
-    (imap-stop-idle conn))
-  (call-next-method))
-
-(defmethod imap-start-idle ((conn imap) &optional handler
-                            &aux reqid)
-  "Enter IDLE mode. While idling the server can send notifications which
-will be handled by the read loop thread via `imap-parse'. Sending any
-`imap-command' while a connection is idling will automatically stop
-IDLE mode (otherwise the server would just end IDLE mode but fail to
-execute the command). Note that IDLE mode will not be automatically
-resumed, you'll have to call `imap-start-idle' again. See also macro
-`with-idle-resume'."
-  (unless (imap-idling conn)
-    (with-sock-lock conn
-      (unless (imap-idling conn)
-        (setf reqid
-              (imap-command
-               conn "IDLE"
-               (lambda (&rest args)
-                 (v:debug :idle "IDLE mode finished (~A/~A)" (imap-host conn) reqid)
-                 (when (equalp reqid (imap-idling conn))
-                   (setf (imap-idling conn) nil))
-                 (when handler (apply handler args))))
-              (imap-idling conn) reqid)
-        (v:debug :idle "Entering IDLE mode (~A/~A)" (imap-host conn) reqid)))))
-
-(defmethod imap-stop-idle ((conn imap))
-  "Ends IDLE mode."
-  (when (imap-idling conn)
-    (imap-write conn "DONE")
-    (setf (imap-idling conn) nil)))
 
 (defmacro with-idle-resume (conn &body body)
   "When the connection is idling, stop IDLE mode, execute `body' and then
@@ -393,19 +354,57 @@ restart IDLE mode. When IDLE mode is off, just execute `body'."
                (funcall ,thunk)))
          (funcall ,thunk))))
 
+(defmethod imap-command :before ((conn imap) cmd &optional handler)
+  (declare (ignore cmd handler))
+  (imap-maybe-reconnect conn)
+  (setf (imap-last-command-time conn) (get-universal-time)))
+
+(defmethod imap-command :around ((conn imap) cmd &optional handler)
+  "Wrapper around `imap-command' which turns off IDLE mode."
+  (declare (ignore cmd handler))
+  (with-idle-resume conn
+    (call-next-method)))
+
+(defmethod imap-start-idle ((conn imap) &optional handler
+                            &aux reqid)
+  "Enter IDLE mode. While idling the server can send notifications which
+will be handled by the read loop thread via `imap-parse'. Sending any
+`imap-command' while a connection is idling will automatically stop
+IDLE mode, and resume it back after sending the command. See also
+macro `with-idle-resume'."
+  (unless (imap-idling conn)
+    (with-sock-lock conn
+      (unless (imap-idling conn)
+        (setf reqid
+              (imap-command
+               conn "IDLE"
+               (lambda (&rest args)
+                 (v:debug :idle "IDLE mode finished (~A/~A)" (imap-host conn) reqid)
+                 (when (equalp reqid (imap-idling conn))
+                   (setf (imap-idling conn) nil))
+                 (when handler (apply handler args))))
+              (imap-idling conn) reqid)))))
+
+(defmethod imap-stop-idle ((conn imap))
+  "Ends IDLE mode."
+  (when (imap-idling conn)
+    (imap-write conn "DONE")
+    (setf (imap-idling conn) nil)))
+
 (defmethod imap-command-sync ((conn imap) cmd &optional handler)
   "Synchronously execute command. This holds the mutex and parses server
 output until a tagged response for our command comes back (at which
-point `handler' will be invoked with the argument)."
+point `handler' will be invoked with the argument). Note that you
+cannot use this for the IDLE command (there won't be a tagged answer
+until you send DONE)."
   (with-sock-lock conn
     (let ((reqid (imap-command conn cmd handler)))
       (loop until (equal reqid (imap-parse conn))))))
 
 (defmethod imap-parse ((conn imap))
-  "Parse one command line from the server. Holds the mutex while the
-command is read. Invokes `imap-handle' for untagged notifications. On
-tagged responses it invokes the associated handler from
-`imap-cmdqueue', if found.
+  "Parse one command line from the server. Invokes `imap-handle' for
+untagged notifications. On tagged responses it invokes the associated
+handler from `imap-cmdqueue', if found.
 
 The command line, as returned by `parse-imap-cmdline', is a list of
 tokens (similar to the ones that you send to `imap-command'). The
