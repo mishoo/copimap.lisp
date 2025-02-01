@@ -1,6 +1,6 @@
 ;;;; package.lisp
 
-(defpackage #:imapsync
+(defpackage #:copimap
   (:use #:cl #:named-readtables)
   (:local-nicknames (#:sock #:usocket)
                     (#:rx #:cl-ppcre)
@@ -8,12 +8,12 @@
                     (#:file-attributes #:org.shirakumo.file-attributes)
                     (#:a #:alexandria)))
 
-(defpackage #:imapsync-atoms)
+(defpackage #:copimap-atoms)
 
-(in-package #:imapsync)
+(in-package #:copimap)
 
 (defparameter *preserve-case-readtable* (copy-readtable *readtable*))
 (setf (readtable-case *preserve-case-readtable*) :preserve)
 
-(defreadtable imapsync::syntax
+(defreadtable copimap::syntax
   (:merge :standard))

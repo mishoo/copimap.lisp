@@ -1,6 +1,6 @@
-(in-package #:imapsync)
+(in-package #:copimap)
 
-(in-readtable imapsync::syntax)
+(in-readtable copimap::syntax)
 
 (defclass store ()
   ((path :initarg :path :accessor store-path)
@@ -19,7 +19,7 @@
 
 (defun store-db-filename (store)
   (uiop:native-namestring
-   (fad:merge-pathnames-as-file (store-path store) ".imapsync.sqlite3")))
+   (fad:merge-pathnames-as-file (store-path store) ".copimap.sqlite3")))
 
 (defun store-folder (store &optional folder)
   (uiop:native-namestring
@@ -160,7 +160,7 @@
            (prefix (if (= time prev-time)
                        (format nil "~D_~D" time (incf id))
                        (format nil "~D" (setf id 0 prev-time time)))))
-      (format nil "imapsync.U=~D.~A.~A"
+      (format nil "copimap.U=~D.~A.~A"
               uid
               prefix
               (machine-instance)))))

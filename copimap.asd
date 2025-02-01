@@ -1,6 +1,6 @@
-;;;; imapsync.asd
+;;;; copimap.asd
 
-(asdf:defsystem #:imapsync
+(asdf:defsystem #:copimap
   :description "IMAP client/sync library"
   :author "Mihai Bazon <mihai.bazon@gmail.com>"
   :license  "MIT"
@@ -21,7 +21,8 @@
                #:uiop
                #:local-time
                #:file-attributes
-               #:cl-date-time-parser)
+               #:cl-date-time-parser
+               #:cl-base64)
   :components ((:file "package")
                (:file "parse")
                (:file "mUTF-7")

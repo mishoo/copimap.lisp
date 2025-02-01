@@ -1,6 +1,6 @@
-(in-package #:imapsync)
+(in-package #:copimap)
 
-(in-readtable imapsync::syntax)
+(in-readtable copimap::syntax)
 
 (defun sql-row (db query &rest args)
   (dbi:fetch

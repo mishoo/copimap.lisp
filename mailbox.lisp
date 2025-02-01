@@ -1,6 +1,6 @@
-(in-package #:imapsync)
+(in-package #:copimap)
 
-(in-readtable imapsync::syntax)
+(in-readtable copimap::syntax)
 
 (defclass mailbox ()
   ((mailbox-name :initarg :mailbox-name :accessor mailbox-name)
@@ -26,7 +26,7 @@
        ,@body)))
 
 (defmethod mailbox-local-store-directory ((conn imap+mailbox))
-  (format nil "~~/Imapsync/~A/~A/~A/"
+  (format nil "~~/Copimap/~A/~A/~A/"
           (imap-host conn)
           (imap-user conn)
           (rx:regex-replace-all "[\\[\\]]" (mailbox-name conn) "_")))

@@ -1,4 +1,4 @@
-(in-package #:imapsync)
+(in-package #:copimap)
 
 (defparameter *mod-b64-chars* "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,")
 

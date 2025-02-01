@@ -1,8 +1,8 @@
-(in-package #:imapsync)
+(in-package #:copimap)
 
-(defconstant +atoms-package+ (find-package "IMAPSYNC-ATOMS"))
+(defconstant +atoms-package+ (find-package "COPIMAP-ATOMS"))
 
-(in-readtable imapsync::syntax)
+(in-readtable copimap::syntax)
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (set-macro-character

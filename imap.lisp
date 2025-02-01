@@ -1,6 +1,6 @@
-(in-package #:imapsync)
+(in-package #:copimap)
 
-(in-readtable imapsync::syntax)
+(in-readtable copimap::syntax)
 
 (defclass imap ()
   ((host :initarg :host :accessor imap-host
@@ -412,8 +412,8 @@ first is `:untagged' for notifications or `:continue' for continuation
 requests, otherwise it's a request ID followed by return value.
 
 IMAP atoms are similar to Lisp symbols, so they are parsed as such,
-and interned into `+atoms-package+' (IMAPSYNC-ATOMS). Note that the
-reader syntax in `IMAPSYNC' defines a custom reader for $ which
+and interned into `+atoms-package+' (COPIMAP-ATOMS). Note that the
+reader syntax in `COPIMAP' defines a custom reader for $ which
 interns symbols in `+atoms-package+'. This reader is case sensitive,
 so symbol `$OK' will be different from `$ok'."
   (let* ((line (parse-imap-cmdline (imap-text-stream conn))))

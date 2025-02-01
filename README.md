@@ -1,4 +1,4 @@
-# imapsync
+# copimap
 ### _Mihai Bazon <mihai.bazon@gmail.com>_
 
 An IMAP client library for Common Lisp, disguised into an OfflineIMAP-like
