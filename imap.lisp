@@ -10,67 +10,85 @@
          :documentation "IMAP username")
 
    (password :initarg :password :accessor imap-password
-             :documentation "IMAP user password. Pass either the raw password as string, or a list
+             :documentation
+             "IMAP user password. Pass either the raw password as string, or a list
 to invoke an external program (should write the password to standard
 output). External programs are run via `uiop:run-program'. If the form
 is (:shell \"command\") then we'll pass :force-shell T.")
 
    (use-ssl :initarg :use-ssl :accessor imap-use-ssl :initform t
-            :documentation "Pass T to use SSL (default), `:STARTTLS' or
+            :documentation
+            "Pass T to use SSL (default), `:STARTTLS' or
 `:nope-just-send-my-password-in-clear-text'. Note that for `:STARTTLS'
 we require the server to advertise the `STARTTLS' capability; login
 will not be attempted over plain text.")
 
    (port :initarg :port :accessor imap-port :initform nil
-         :documentation "Server port. Will default to 143 or 993, depending on the value of `use-ssl'.")
+         :documentation
+         "Server port. Will default to 143 or 993, depending on the value of `use-ssl'.")
 
    (capability :reader imap-capability
-               :documentation "Filled from the server (list of uppercase strings).")
+               :documentation
+               "Filled from the server (list of uppercase strings).")
 
    (sock :initform nil :accessor imap-sock
-         :documentation "The main connection, initialized in `imap-connect' (`usocket')")
+         :documentation
+         "The main connection, initialized in `imap-connect' (`usocket')")
 
    (bin-stream :accessor imap-bin-stream
-               :documentation "The binary stream, initialized in `imap-connect'")
+               :documentation
+               "The binary stream, initialized in `imap-connect'")
 
    (text-stream :accessor imap-text-stream
-                :documentation "The text stream (a `flexi-stream')")
+                :documentation
+                "The text stream (a `flexi-stream')")
 
    (cmdseq :initform 0 :accessor imap-cmdseq
-           :documentation "Current request id, incremented on each `imap-command'.")
+           :documentation
+           "Current request id, incremented on each `imap-command'.")
 
    (cmdqueue :initform (make-hash-table :test 'equal) :accessor imap-cmdqueue
-             :documentation "Handlers for commands awaiting replies.")
+             :documentation
+             "Handlers for commands awaiting replies.")
 
    (sock-lock :accessor imap-sock-lock
-              :documentation "Mutex that will be held on reading/writing from the streams.")
+              :documentation
+              "Mutex that will be held on reading/writing from the streams.")
 
    (thread :accessor imap-thread
-           :documentation "The read loop thread.")
+           :documentation
+           "The read loop thread.")
 
    (running :initform nil :accessor imap-running
-            :documentation "The read loop will continue as long as this remains T.")
+            :documentation
+            "The read loop will continue as long as this remains T.")
 
    (reconnect :initform t :accessor imap-reconnect
-              :documentation "Wether to attempt reconnecting when the socket is closed. See
+              :documentation
+              "Wether to attempt reconnecting when the socket is closed. See
 `imap-maybe-reconnect'.")
 
    (idling :initform nil :accessor imap-idling
-           :documentation "Used internally to keep track of wether an IDLE command is in
+           :documentation
+           "Used internally to keep track of wether an IDLE command is in
 progress. See `imap-start-idle'.")
 
    (poll-time :initform 1200 :initarg :poll-time :accessor imap-poll-time
-              :documentation "If non-NIL, the read loop will send NOOP commands every so many
+              :documentation
+              "If non-NIL, the read loop will send NOOP commands every so many
 seconds. Default is 20 minutes.")
 
    (last-command-time :initform nil :accessor imap-last-command-time
-                      :documentation "Used internally for polling (keeps track of last command time).")
+                      :documentation
+                      "Used internally for polling (keeps track of last command time).")
 
    (utf-7 :initform nil :reader imap-utf-7
-          :documentation "Whether we should do mUTF-7 conversion for ASTRING-s. Will be set when
+          :documentation
+          "Whether we should do mUTF-7 conversion for ASTRING-s. Will be set when
 we receive capabilities if IMAP4rev1 is advertised."))
 
-  (:documentation "Low-level IMAP class.
+  (:documentation
+   "Low-level IMAP class.
 
 Supports plain authentication, sending commands and receiving output.
 
@@ -84,16 +102,17 @@ specialize `imap-handle' in your own subclasses in order to retrieve
 results from the server."))
 
 (defgeneric imap-connect (imap)
-  (:documentation "
-Starts the IMAP connection. After successful authentication the read
+  (:documentation
+   "Starts the IMAP connection. After successful authentication the read
 loop thread is started. Returns T on success."))
 
 (defgeneric imap-close (imap)
-  (:documentation "Close the connection"))
+  (:documentation
+   "Close the connection"))
 
 (defgeneric imap-parse (imap)
-  (:documentation "
-Parse one command line from the server. Invokes `imap-handle' for
+  (:documentation
+   "Parse one command line from the server. Invokes `imap-handle' for
 untagged notifications. On tagged responses it invokes the associated
 handler from `imap-cmdqueue', if found.
 
@@ -109,40 +128,41 @@ symbols in `+atoms-package+'. This reader is case sensitive, so symbol
 `$OK' will be different from `$ok'."))
 
 (defgeneric imap-handle (imap cmd arg)
-  (:documentation "
-Will be invoked by `imap-parse' for untagged notification. `cmd' is
+  (:documentation
+   "Will be invoked by `imap-parse' for untagged notification. `cmd' is
 the notification label as a copimap symbol (e.g. $FETCH, $EXISTS etc.)
 and `arg' contains whatever arguments were sent."))
 
 (defgeneric imap-command (imap cmd &optional handler)
-  (:documentation "
-Send a command to the IMAP server. The function returns immediately,
+  (:documentation
+   "Send a command to the IMAP server. The function returns immediately,
 and `handler' will be invoked from the read thread when a tagged
 response comes back. See the documentation of the available methods;
 the most useful one is where `cmd' is a list."))
 
 (defgeneric imap-command-sync (imap cmdstr &optional handler)
-  (:documentation "
-Synchronously execute command. This holds the mutex and parses server
+  (:documentation
+   "Synchronously execute command. This holds the mutex and parses server
 output until a tagged response for our command comes back (at which
 point `handler' will be invoked with the argument). Note that you
 cannot use this for the IDLE command (there won't be a tagged answer
 until you send DONE)."))
 
 (defgeneric imap-start-idle (imap &optional handler)
-  (:documentation "
-Enter IDLE mode. While idling the server can send notifications which
+  (:documentation
+   "Enter IDLE mode. While idling the server can send notifications which
 will be handled by the read loop thread via `imap-parse'. Sending any
 `imap-command' while a connection is idling will automatically stop
 IDLE mode, and resume it back after sending the command. See also
 macro `with-idle-resume'."))
 
 (defgeneric imap-stop-idle (imap)
-  (:documentation "Ends IDLE mode."))
+  (:documentation
+   "Ends IDLE mode."))
 
 (defgeneric imap-has-capability (imap capability)
-  (:documentation "
-Checks if the server advertises the `cap' capability (should be a
+  (:documentation
+   "Checks if the server advertises the `cap' capability (should be a
 keyword symbol)."))
 
 (defgeneric imap-write (imap str))
@@ -151,8 +171,8 @@ keyword symbol)."))
 (defgeneric imap-start-read-loop (imap))
 
 (defgeneric imap-on-connect (imap)
-  (:documentation "
-Will be invoked after successful authentication. Could be useful in
+  (:documentation
+   "Will be invoked after successful authentication. Could be useful in
 subclasses, for example to re-SELECT the appropriate mailbox."))
 
 ;;;;; implementation
