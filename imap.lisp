@@ -190,17 +190,18 @@ subclasses, for example to re-SELECT the appropriate mailbox."))
 
 (defmethod imap-password ((conn imap))
   (let ((pass (slot-value conn 'password)))
-    (if (not (consp pass))
-        pass
-        (let ((shell nil))
-          (when (eq :shell (car pass))
-            (setf pass (cdr pass) shell t))
-          (string-trim '(#\Return #\Newline)
-                       (with-output-to-string (out)
-                         (with-output-to-string (err)
-                           (uiop:run-program pass :output out
-                                                  :error-output err
-                                                  :force-shell shell))))))))
+    (etypecase pass
+      (string pass)
+      (cons
+       (let ((shell nil))
+         (when (eq :shell (car pass))
+           (setf pass (cdr pass) shell t))
+         (string-trim '(#\Return #\Newline)
+                      (with-output-to-string (out)
+                        (with-output-to-string (err)
+                          (uiop:run-program pass :output out
+                                                 :error-output err
+                                                 :force-shell shell)))))))))
 
 (defmethod imap-on-connect ((conn imap))
   (v:debug :imap "Connected to ~A (~A)" (imap-host conn) (imap-user conn)))
@@ -543,7 +544,12 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
       ;; XXX: perhaps these values are too low?
       (setf (sb-bsd-sockets:sockopt-tcp-keepidle (usocket:socket sock)) 10)
       (setf (sb-bsd-sockets:sockopt-tcp-keepintvl (usocket:socket sock)) 3)
-      (setf (sb-bsd-sockets:sockopt-tcp-keepcnt (usocket:socket sock)) 3))
+      (setf (sb-bsd-sockets:sockopt-tcp-keepcnt (usocket:socket sock)) 3)
+
+      ;; this one's recent, not sure it will be merged, so let's check for it:
+      ;; https://github.com/sbcl/sbcl/pull/66/files
+      #.(awhen (find-symbol "SOCKOPT-TCP-USER-TIMEOUT" :sb-bsd-sockets)
+          `(setf (,it (usocket:socket sock)) 30000)))
 
     (labels
         ((login (&aux authenticated)
@@ -608,6 +614,20 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
         (imap-cmdqueue conn) (make-hash-table :test 'equal)
         (imap-cmdseq conn) 0))
 
+(defmacro with-socket-conditions (on-error &body body)
+  `(handler-case
+       (progn
+         ,@body)
+     (sock:ns-error (ex)
+       (v:error :SOCKET "~A" ex)
+       ,on-error)
+     (sock:socket-error (ex)
+       (v:error :SOCKET "~A" ex)
+       ,on-error)
+     (cl+ssl::ssl-error (ex)
+       (v:error :SOCKET "~A" ex)
+       ,on-error)))
+
 (defmethod imap-read-loop ((conn imap))
   (v:debug :imap "Starting read loop (~A)" (imap-host conn))
   (imap-on-connect conn)
@@ -619,7 +639,7 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
                until (loop repeat 3
                            do (v:debug :CONNECT "Attempting reconnect ~A ~A.."
                                        (imap-host conn) (incf count))
-                           when (imap-connect conn)
+                           when (ignore-errors (imap-connect conn))
                              do (return t)
                            do (sleep 2)
                            finally (return nil))
@@ -627,24 +647,18 @@ https://www.ietf.org/rfc/rfc9051.html#name-esearch-response"
                   (sleep 10))
          (when was-idle
            (imap-start-idle conn))))
-    (handler-case
-        (loop for poll-time = (imap-poll-time conn)
-              while (imap-running conn)
-              when (and poll-time
-                        (<= poll-time (- (get-universal-time)
-                                         (imap-last-command-time conn))))
-                do (imap-command conn "NOOP")
-              do (sock:wait-for-input (imap-sock conn) :timeout 1)
-                 (with-sock-lock conn
-                   (loop while (and (imap-running conn)
-                                    (listen (imap-text-stream conn)))
-                         do (imap-parse conn))))
-      (sock:socket-error (ex)
-        (v:error :SOCKET "ERROR ~A" ex)
-        (reconnect))
-      (cl+ssl::ssl-error (ex)
-        (v:error :SOCKET "ERROR ~A" ex)
-        (reconnect)))))
+    (with-socket-conditions (reconnect)
+      (loop for poll-time = (imap-poll-time conn)
+            while (imap-running conn)
+            when (and poll-time
+                      (<= poll-time (- (get-universal-time)
+                                       (imap-last-command-time conn))))
+              do (imap-command conn "NOOP")
+            do (sock:wait-for-input (imap-sock conn) :timeout 1)
+               (with-sock-lock conn
+                 (loop while (and (imap-running conn)
+                                  (listen (imap-text-stream conn)))
+                       do (imap-parse conn)))))))
 
 (defmethod imap-start-read-loop ((conn imap))
   (let ((tname (format nil "IMAP:~A/~A" (imap-host conn) (imap-user conn))))

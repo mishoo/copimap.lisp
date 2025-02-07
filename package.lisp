@@ -1,7 +1,7 @@
 ;;;; package.lisp
 
 (defpackage #:copimap
-  (:use #:cl #:named-readtables)
+  (:use #:cl #:named-readtables #:anaphora)
   (:local-nicknames (#:sock #:usocket)
                     (#:rx #:cl-ppcre)
                     (#:v #:org.shirakumo.verbose)
