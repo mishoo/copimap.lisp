@@ -19,6 +19,10 @@
    (gmail :initform nil :accessor mailbox-gmail)))
 
 (defgeneric mailbox-fetch (mailbox uids &optional handler))
+(defgeneric mailbox-fetch-new (mailbox &optional handler))
+(defgeneric mailbox-fetch-changedsince (mailbox &optional handler))
+(defgeneric mailbox-local-store-directory (mailbox))
+(defgeneric mailbox-fetch-remote-changes (mailbox))
 
 (defmacro with-local-store (conn &body body)
   `(with-slots ((store local-store)) ,conn
@@ -46,6 +50,8 @@
   (setf (mailbox-valid conn) nil)
   (when (imap-has-capability conn :X-GM-EXT-1)
     (setf (mailbox-gmail conn) t))
+  (when (imap-has-capability conn :CONDSTORE)
+    (imap-command conn '(ENABLE CONDSTORE)))
   (imap-command
    conn `(:select (:astr ,(mailbox-name conn)))
    (lambda (arg)
@@ -66,7 +72,8 @@
                   (v:info :mailbox "UIDVALIDITY initialized"))
               (store-save-mailbox store conn)
               (setf (mailbox-valid conn) t)
-              (mailbox-fetch-new conn)))))))))
+              (mailbox-fetch-new conn)
+              (imap-start-idle conn)))))))))
 
 (defmethod imap-handle ((conn imap+mailbox) (cmd (eql '$OK)) arg)
   (when (listp (car arg))
@@ -105,6 +112,29 @@
                        ,@(when (mailbox-gmail conn) '(X-GM-LABELS))
                        (:BODY.PEEK)))
                 handler))
+
+(defmethod mailbox-fetch-changedsince ((conn imap+mailbox) &optional handler)
+  (when (mailbox-highestmodseq conn)
+    (with-local-store conn
+      (with-idle-resume conn
+        (let ((uid (store-get-last-uid store)))
+          (imap-command conn
+                        `(UID FETCH (:range 1 ,uid)
+                              (UID
+                               FLAGS
+                               ,@(when (mailbox-gmail conn) '(X-GM-LABELS)))
+                              (CHANGEDSINCE ,(mailbox-highestmodseq conn)))
+                        handler)
+          (imap-command conn
+                        `(UID FETCH (:range ,(1+ uid) :*)
+                              (UID
+                               INTERNALDATE
+                               ENVELOPE
+                               FLAGS
+                               ,@(when (mailbox-gmail conn) '(X-GM-LABELS))
+                               (:BODY.PEEK))
+                              (CHANGEDSINCE ,(mailbox-highestmodseq conn)))
+                        handler))))))
 
 (defmethod mailbox-fetch-new ((conn imap+mailbox) &optional handler)
   (with-local-store conn
@@ -162,3 +192,12 @@
                          (when setcmd
                            (incf cmdcount)
                            (imap-command conn `(UID STORE ,uid . ,setcmd) handler))))))))))
+
+;; (defmethod mailbox-fetch-remote-changes ((conn imap+mailbox))
+;;   (with-local-store conn
+;;     (let ((uid (or (store-get-last-uid store) 0)))
+;;       (imap-command conn
+;;                     `(UID FETCH (:range 1 ,uid)
+;;                           (UID
+;;                            FLAGS
+;;                            ,@(when (mailbox-gmail conn) '(X-GM-LABELS))))))))

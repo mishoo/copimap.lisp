@@ -67,7 +67,7 @@
       (setf (q-get-labels store)
             (dbi:prepare db "SELECT label FROM map_label_message WHERE message = ?"))
       (setf (q-set-encountered store)
-            (dbi:prepare db "UPDATE message SET encountered = 1 WHERE uid = ?"))
+            (dbi:prepare db "UPDATE message SET encountered = 1, path = ? WHERE uid = ?"))
       (setf (q-get-metadata store)
             (dbi:prepare db "SELECT intval, txtval, binval FROM mailbox WHERE key = ?"))
       (setf (q-set-metadata store)
@@ -78,7 +78,7 @@
   (loop with db = (store-db store)
         with query = (dbi:prepare db "INSERT INTO mailbox (key, intval) VALUES (?, ?)
                                       ON CONFLICT(key) DO UPDATE SET intval = ?")
-        for key in '(exists recent unseen uidvalidity uidnext highestmodseq)
+        for key in '(exists recent unseen uidvalidity uidnext)
         for val = (slot-value mailbox key)
         do (dbi:execute query (list (symbol-name key) val val))))
 
@@ -94,7 +94,7 @@
   (dbi:execute
    (q-set-metadata store) (list key intval txtval binval intval txtval binval)))
 
-(defmethod store-set-metadata ((store store) (key symbol) &rest args)
+(defmethod store-set-metadata ((store store) (key symbol) &rest args &key &allow-other-keys)
   (apply #'store-set-metadata store (symbol-name key) args))
 
 (defmethod store-insert-message ((store store)
@@ -240,8 +240,11 @@ appended)."
 (defmethod store-save-messages ((store maildir-store) (conn imap) messages)
   (loop with db = (store-db store)
         with mtime
+        with filename
+        with tmpname
         for msg in messages
         for uid = (getf msg '$UID)
+        for modseq = (car (getf msg '$MODSEQ))
         for internaldate = (let* ((date (getf msg '$INTERNALDATE))
                                   (ts (when date (parse-internaldate date))))
                              (when ts (local-time:timestamp-to-unix ts)))
@@ -253,14 +256,15 @@ appended)."
         for envelope = (getf msg '$ENVELOPE)
         for message-id = (when envelope (envelope-message-id envelope))
         for body = (getf msg '$BODY[])
-        for filename = (maildir-make-filename store uid envelope)
-        for tmpname = (fad:merge-pathnames-as-file (store-folder store "tmp/") filename)
         do (dbi:with-transaction db
              (cond
                ((store-get-by-uid store uid)
+                (v:debug :store "Updating message ~D ~A ~A" uid flags labels)
                 (store-set-flags store uid str-flags)
                 (store-set-labels store uid str-labels))
                (body
+                (setf filename (maildir-make-filename store uid envelope)
+                      tmpname (fad:merge-pathnames-as-file (store-folder store "tmp/") filename))
                 (v:debug :store "Saving message ~D ~A ~A" uid flags filename)
                 (with-open-file (out tmpname :direction :output
                                              :if-exists :supersede
@@ -287,7 +291,13 @@ appended)."
                                             :message-id message-id
                                             :mtime mtime
                                             :flags str-flags
-                                            :labels str-labels))))))
+                                            :labels str-labels)))
+             (when modseq
+               (let ((highestmodseq (mailbox-highestmodseq conn)))
+                 (when (or (not highestmodseq)
+                           (< highestmodseq modseq))
+                   (store-set-metadata store '$HIGHESTMODSEQ :intval modseq)
+                   (setf (mailbox-highestmodseq conn) modseq)))))))
 
 (defun maildir-flags-from-file-suffix (strflags)
   (loop for ch across strflags
@@ -365,7 +375,7 @@ appended)."
           for msg = (when uid (store-get-by-uid store uid))
           for stuff = nil
           when msg do
-          (dbi:execute (q-set-encountered store) (list uid))
+          (dbi:execute (q-set-encountered store) (list filename uid))
           (let ((saved-mtime (getf msg :|mtime|)))
             (declare (type fixnum saved-mtime))
             (unless (= mtime saved-mtime)
